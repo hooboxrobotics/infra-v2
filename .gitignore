@@ -8,3 +8,31 @@ devenv.local.yaml
 
 # pre-commit
 .pre-commit-config.yaml
+
+# Local .terraform directories (contains cached providers/modules)
+.terraform/
+
+# .tfstate files (contains sensitive infra data; use a remote backend instead)
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Sensitive variable files (likely contains passwords/keys)
+*.tfvars
+*.tfvars.json
+
+# Override files (used for local-only changes)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Transient lock info files
+.terraform.tfstate.lock.info
+
+# CLI configuration files
+.terraformrc
+terraform.rc
