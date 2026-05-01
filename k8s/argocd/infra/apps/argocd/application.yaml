@@ -19,7 +19,7 @@ spec:
       ref: values
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
-      path: manifests/infra/argocd
+      path: k8s/manifests/infra/argocd
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

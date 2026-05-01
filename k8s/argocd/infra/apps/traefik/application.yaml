@@ -19,7 +19,7 @@ spec:
       ref: values
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
-      path: manifests/infra/traefik
+      path: k8s/manifests/infra/traefik
   destination:
     server: https://kubernetes.default.svc
     namespace: traefik
