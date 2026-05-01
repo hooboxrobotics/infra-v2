@@ -2,26 +2,7 @@ locals {
   env  = "prd"
   name = "hbx-${local.env}"
 
-  vpc_id = "vpc-0f606b0adf0e08852"
-
-  controle_plane_subnet_ids = [
-    "subnet-011901ea6568eb8b8",
-    "subnet-04f87bc83991303a7",
-    "subnet-06bbda0f2405ab4af"
-  ]
-
-  common_nodes_subnet_ids = [
-    "subnet-07452c1029e6c5ed5",
-    "subnet-0abaf61567da5db66",
-    "subnet-0c8d9dc648de35705"
-  ]
-
   kubernetes_version = "1.35"
-}
-
-data "aws_iam_roles" "administrator_access" {
-  name_regex  = "AWSReservedSSO_AdministratorAccess_.*"
-  path_prefix = "/aws-reserved/sso.amazonaws.com/"
 }
 
 module "eks" {
@@ -29,8 +10,8 @@ module "eks" {
   version = "~> 21.0"
 
   name       = local.name
-  vpc_id     = local.vpc_id
-  subnet_ids = local.controle_plane_subnet_ids
+  vpc_id     = data.aws_vpc.network.id
+  subnet_ids = data.aws_subnets.eks_control_plane.ids
 
   kubernetes_version = local.kubernetes_version
 
@@ -66,7 +47,7 @@ module "eks" {
       max_size     = 5
       desired_size = 3
 
-      subnet_ids = local.common_nodes_subnet_ids
+      subnet_ids = data.aws_subnets.eks_common_nodes.ids
     }
   }
 
