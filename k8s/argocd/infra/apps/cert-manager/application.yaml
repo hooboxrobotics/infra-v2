@@ -13,7 +13,7 @@ spec:
       targetRevision: v1.20.0
       helm:
         valueFiles:
-          - $values/argocd/infra/apps/cert-manager/values.yaml
+          - $values/k8s/argocd/infra/apps/cert-manager/values.yaml
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
       ref: values

@@ -13,7 +13,7 @@ spec:
       targetRevision: 1.0.2
       helm:
         valueFiles:
-          - $values/argocd/infra/apps/argo-workflows/values.yaml
+          - $values/k8s/argocd/infra/apps/argo-workflows/values.yaml
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
       ref: values

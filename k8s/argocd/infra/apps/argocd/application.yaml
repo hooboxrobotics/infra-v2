@@ -13,7 +13,7 @@ spec:
       targetRevision: 9.4.10
       helm:
         valueFiles:
-          - $values/argocd/infra/apps/argocd/values.yaml
+          - $values/k8s/argocd/infra/apps/argocd/values.yaml
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
       ref: values

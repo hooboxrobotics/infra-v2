@@ -13,7 +13,7 @@ spec:
       targetRevision: 39.0.5
       helm:
         valueFiles:
-          - $values/argocd/infra/apps/traefik/values.yaml
+          - $values/k8s/argocd/infra/apps/traefik/values.yaml
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
       ref: values
