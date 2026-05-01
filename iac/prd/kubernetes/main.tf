@@ -12,9 +12,9 @@ locals {
   kubernetes_version = "1.34"
 }
 
-import {
-  to = module.eks.aws_eks_cluster.this[0]
-  id = local.name
+data "aws_iam_roles" "administrator_access" {
+  name_regex  = "AWSReservedSSO_AdministratorAccess_.*"
+  path_prefix = "/aws-reserved/sso.amazonaws.com/"
 }
 
 module "eks" {
@@ -34,6 +34,21 @@ module "eks" {
   compute_config = {
     enabled    = true
     node_pools = ["general-purpose"]
+  }
+
+  access_entries = {
+    administrator_access = {
+      principal_arn = one(data.aws_iam_roles.administrator_access.arns)
+
+      policy_associations = {
+        cluster_admin = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
   }
 
   authentication_mode = "API"
