@@ -100,10 +100,10 @@ applicationSet:
   nodeSelector: {}
   pdb:
     annotations: {}
-    enabled: false
+    enabled: true
     labels: {}
     maxUnavailable: ""
-    minAvailable: ""
+    minAvailable: 1
   podAnnotations: {}
   podLabels: {}
   priorityClassName: ""
@@ -114,7 +114,7 @@ applicationSet:
     periodSeconds: 10
     successThreshold: 1
     timeoutSeconds: 1
-  replicas: 1
+  replicas: 2
   resources:
     requests:
       cpu: 50m
@@ -400,7 +400,9 @@ controller:
   dynamicClusterDistribution: false
   emptyDir:
     sizeLimit: ""
-  env: []
+  env:
+    - name: ARGOCD_CONTROLLER_REPLICAS
+      value: "2"
   envFrom: []
   extraArgs:
     - --status-processors=5
@@ -452,10 +454,10 @@ controller:
   nodeSelector: {}
   pdb:
     annotations: {}
-    enabled: false
+    enabled: true
     labels: {}
     maxUnavailable: ""
-    minAvailable: ""
+    minAvailable: 1
   podAnnotations: {}
   podLabels: {}
   priorityClassName: ""
@@ -465,7 +467,7 @@ controller:
     periodSeconds: 10
     successThreshold: 1
     timeoutSeconds: 1
-  replicas: 1
+  replicas: 2
   resources:
     requests:
       cpu: 100m
@@ -794,7 +796,7 @@ redis:
   deploymentLabels: {}
   dnsConfig: {}
   dnsPolicy: ClusterFirst
-  enabled: true
+  enabled: false
   env: []
   envFrom: []
   exporter:
@@ -917,7 +919,7 @@ redis-ha:
   auth: true
   containerSecurityContext:
     readOnlyRootFilesystem: true
-  enabled: false
+  enabled: true
   existingSecret: argocd-redis
   exporter:
     enabled: false
@@ -1076,10 +1078,10 @@ repoServer:
   nodeSelector: {}
   pdb:
     annotations: {}
-    enabled: false
+    enabled: true
     labels: {}
     maxUnavailable: ""
-    minAvailable: ""
+    minAvailable: 1
   podAnnotations: {}
   podLabels: {}
   priorityClassName: ""
@@ -1091,7 +1093,7 @@ repoServer:
     periodSeconds: 10
     successThreshold: 1
     timeoutSeconds: 1
-  replicas: 1
+  replicas: 2
   resources:
     requests:
       cpu: 50m
@@ -1305,10 +1307,10 @@ server:
   nodeSelector: {}
   pdb:
     annotations: {}
-    enabled: false
+    enabled: true
     labels: {}
     maxUnavailable: ""
-    minAvailable: ""
+    minAvailable: 1
   podAnnotations: {}
   podLabels: {}
   priorityClassName: ""
@@ -1319,7 +1321,7 @@ server:
     periodSeconds: 10
     successThreshold: 1
     timeoutSeconds: 1
-  replicas: 1
+  replicas: 2
   resources:
     requests:
       cpu: 50m
