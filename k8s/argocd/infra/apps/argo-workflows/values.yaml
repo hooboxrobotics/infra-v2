@@ -1,0 +1,49 @@
+crds:
+  upgradeJob:
+    image:
+      repository: docker.io/bitnami/kubectl
+      tag: latest
+
+server:
+  authModes:
+    - server
+  nodeSelector:
+    workload: infra
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt
+      traefik.ingress.kubernetes.io/router.middlewares: traefik-redirect-to-https@kubernetescrd,argo-argo-workflows-basic-auth@kubernetescrd
+    hosts:
+      - wf.prd.hoobox.one
+    tls:
+      - hosts:
+          - wf.prd.hoobox.one
+        secretName: argo-workflows-tls
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "256Mi"
+
+workflow:
+  serviceAccount:
+    create: true
+  rbac:
+    create: true
+
+controller:
+  workflowNamespaces:
+    - argo
+  nodeSelector:
+    workload: infra
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "256Mi"

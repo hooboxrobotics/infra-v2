@@ -1,0 +1,23 @@
+crds:
+  enabled: true
+
+replicaCount: 1
+
+nodeSelector:
+  workload: infra
+
+cainjector:
+  nodeSelector:
+    workload: infra
+
+webhook:
+  nodeSelector:
+    workload: infra
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "150m"
+    memory: "128Mi"
