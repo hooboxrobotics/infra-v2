@@ -400,9 +400,7 @@ controller:
   dynamicClusterDistribution: false
   emptyDir:
     sizeLimit: ""
-  env:
-    - name: ARGOCD_CONTROLLER_REPLICAS
-      value: "2"
+  env: []
   envFrom: []
   extraArgs:
     - --status-processors=5
