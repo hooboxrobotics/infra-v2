@@ -25,7 +25,7 @@ service:
   type: LoadBalancer
   annotations:
     service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-    service.beta.kubernetes.io/aws-load-balancer-subnets: eks-elb
+    service.beta.kubernetes.io/aws-load-balancer-subnets: subnet-03d4fde470eedf33c,subnet-0b8e7ad8d4f138241,subnet-0eba1ad2e33521ad6
 
 ingressClass:
   enabled: true
