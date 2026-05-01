@@ -23,7 +23,9 @@ ports:
 
 service:
   type: LoadBalancer
-  annotations: {}
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-subnets: eks-elb
 
 ingressClass:
   enabled: true
