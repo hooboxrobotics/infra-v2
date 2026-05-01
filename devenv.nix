@@ -12,6 +12,10 @@
     starship
   ];
 
+  env = {
+    AWS_DEFAULT_REGION = "sa-east-1";
+  };
+
   languages.opentofu = {
     enable     = true;
     lsp.enable = true;
