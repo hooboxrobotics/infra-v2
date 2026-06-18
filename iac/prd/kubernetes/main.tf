@@ -26,10 +26,6 @@ module "eks" {
   }
 
   enable_cluster_creator_admin_permissions = false
-  compute_config = {
-    enabled    = true
-    node_pools = ["general-purpose"]
-  }
 
   eks_managed_node_groups = {
     infra = {
