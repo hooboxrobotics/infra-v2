@@ -17,24 +17,6 @@ resources:
     cpu: "256m"
     memory: "1Gi"
 
-affinity:
-  nodeAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        preference:
-          matchExpressions:
-            - key: workload
-              operator: In
-              values:
-                - infra
-      - weight: 10
-        preference:
-          matchExpressions:
-            - key: workload
-              operator: In
-              values:
-                - apps
-
 ports:
   otlp:
     enabled: true
