@@ -24,6 +24,7 @@ module "eks" {
       before_compute = true
     }
     eks-pod-identity-agent = {}
+    aws-ebs-csi-driver     = {}
   }
 
   enable_cluster_creator_admin_permissions = false
@@ -70,9 +71,6 @@ module "eks" {
   }
 }
 
-# Pod Identity para o AWS Load Balancer Controller.
-# Substitui o load balancing que era provido pelo EKS Auto Mode (removido em fa9338d).
-# attach_aws_lb_controller_policy injeta a IAM policy oficial do controller.
 module "aws_lb_controller_pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
   version = "~> 2.0"
@@ -86,6 +84,27 @@ module "aws_lb_controller_pod_identity" {
       cluster_name    = module.eks.cluster_name
       namespace       = "kube-system"
       service_account = "aws-load-balancer-controller"
+    }
+  }
+
+  tags = {
+    Env = local.env
+  }
+}
+
+module "ebs_csi_pod_identity" {
+  source  = "terraform-aws-modules/eks-pod-identity/aws"
+  version = "~> 2.0"
+
+  name = "${local.name}-ebs-csi"
+
+  attach_aws_ebs_csi_policy = true
+
+  associations = {
+    this = {
+      cluster_name    = module.eks.cluster_name
+      namespace       = "kube-system"
+      service_account = "ebs-csi-controller-sa"
     }
   }
 
