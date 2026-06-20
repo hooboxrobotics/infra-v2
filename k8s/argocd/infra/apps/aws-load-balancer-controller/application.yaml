@@ -1,32 +1,28 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: traefik
+  name: aws-load-balancer-controller
   namespace: argocd
   annotations:
-    # traefik should be synchronized after all the other
-    # apps, since it depends on aws-load-balancer
-    argocd.argoproj.io/sync-wave: "1"
+    # first app to be synchronized because traefik depends on that
+    argocd.argoproj.io/sync-wave: "-1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infra
   sources:
-    - repoURL: https://traefik.github.io/charts
-      chart: traefik
-      targetRevision: 39.0.5
+    - repoURL: https://aws.github.io/eks-charts
+      chart: aws-load-balancer-controller
+      targetRevision: 1.13.3
       helm:
         valueFiles:
-          - $values/k8s/argocd/infra/apps/traefik/values.yaml
+          - $values/k8s/argocd/infra/apps/aws-load-balancer-controller/values.yaml
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
       ref: values
-    - repoURL: https://github.com/hooboxrobotics/infra-v2.git
-      targetRevision: main
-      path: k8s/manifests/infra/traefik
   destination:
     server: https://kubernetes.default.svc
-    namespace: traefik
+    namespace: kube-system
   syncPolicy:
     automated:
       prune: true
