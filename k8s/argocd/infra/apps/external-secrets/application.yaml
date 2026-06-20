@@ -20,6 +20,9 @@ spec:
     - repoURL: https://github.com/hooboxrobotics/infra-v2.git
       targetRevision: main
       ref: values
+    - repoURL: https://github.com/hooboxrobotics/infra-v2.git
+      targetRevision: main
+      path: k8s/manifests/infra/external-secrets
   destination:
     server: https://kubernetes.default.svc
     namespace: external-secrets
