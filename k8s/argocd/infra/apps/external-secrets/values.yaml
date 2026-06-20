@@ -1,0 +1,43 @@
+installCRDs: true
+
+# SA usado pela associacao EKS Pod Identity (ver iac/prd/kubernetes/main.tf).
+serviceAccount:
+  create: true
+  name: external-secrets
+
+replicaCount: 2
+
+nodeSelector:
+  workload: infra
+
+resources:
+  requests:
+    cpu: "10m"
+    memory: "64Mi"
+  limits:
+    cpu: "100m"
+    memory: "128Mi"
+
+webhook:
+  replicaCount: 1
+  nodeSelector:
+    workload: infra
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "64Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+
+certController:
+  replicaCount: 1
+  nodeSelector:
+    workload: infra
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "64Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"

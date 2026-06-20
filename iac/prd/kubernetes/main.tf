@@ -112,3 +112,30 @@ module "ebs_csi_pod_identity" {
     Env = local.env
   }
 }
+
+module "external_secrets_pod_identity" {
+  source  = "terraform-aws-modules/eks-pod-identity/aws"
+  version = "~> 2.0"
+
+  name = "${local.name}-external-secrets"
+
+  attach_external_secrets_policy = true
+
+  external_secrets_create_permission = false
+
+  external_secrets_ssm_parameter_arns = [
+    "arn:aws:ssm:sa-east-1:*:parameter/kubernetes/${local.name}/*"
+  ]
+
+  associations = {
+    this = {
+      cluster_name    = module.eks.cluster_name
+      namespace       = "external-secrets"
+      service_account = "external-secrets"
+    }
+  }
+
+  tags = {
+    Env = local.env
+  }
+}

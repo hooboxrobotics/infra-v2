@@ -16,6 +16,7 @@ spec:
     - https://kubernetes-sigs.github.io/metrics-server/
     - https://open-telemetry.github.io/opentelemetry-helm-charts
     - https://aws.github.io/eks-charts
+    - https://charts.external-secrets.io
   destinations:
     - server: https://kubernetes.default.svc
       namespace: "*"
