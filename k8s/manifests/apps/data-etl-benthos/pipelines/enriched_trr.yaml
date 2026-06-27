@@ -1,0 +1,502 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+          query: |
+            WITH BenthosReference AS (
+              SELECT
+                COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00') AS reference_date
+              FROM benthos.datatracker d
+              WHERE d.source = 'enriched_trr'
+            ),
+            StatusPivot AS (
+              SELECT
+                TCI.id_trr_calling,
+                MAX(CASE WHEN TCIS.status = 'unresolved' THEN TCIS.created_at END) AS unresolved,
+                MAX(CASE WHEN TCIS.status = 'taken' THEN TCIS.created_at END) AS taken,
+                MAX(CASE WHEN TCIS.status = 'in_progress' THEN TCIS.created_at END) AS in_progress,
+                MAX(CASE WHEN TCIS.status = 'canceled' THEN TCIS.created_at END) AS cancelled,
+                MAX(CASE WHEN TCIS.status = 'resolved' THEN TCIS.created_at END) AS resolved,
+                MAX(TCIS.created_at) AS last_status_at
+              FROM shared_api_or_events.trrcallingissue TCI
+              JOIN shared_api_or_events.trrcallingissuestatuses TCIS 
+                ON TCIS.id_trr_calling_issue = TCI.id
+              GROUP BY TCI.id_trr_calling
+            ),
+            TrrCallings AS (
+              SELECT
+                tc.id,
+                tc.patient_detail,
+                tc.nm_usuario,
+                tc.id_place_issuer,
+                tc.created_at,
+                tc.nr_atendimento,
+                tc.observation,
+                tci.id_place,
+                e.label,
+                e.id_company,
+                e.id AS id_emergency_code,
+                sp.unresolved,
+                sp.taken,
+                sp.in_progress,
+                sp.cancelled,
+                sp.resolved,
+                sp.last_status_at
+              FROM shared_api_or_events.trrcallings tc
+              JOIN shared_api_or_events.emergencycodes e 
+                ON e.id = tc.id_emergency_code  
+              JOIN shared_api_or_events.trrcallingissue tci 
+                ON tci.id_trr_calling = tc.id
+              JOIN StatusPivot sp 
+                ON sp.id_trr_calling = tc.id
+              JOIN BenthosReference br
+              WHERE sp.last_status_at >= br.reference_date
+              ORDER BY sp.last_status_at ASC
+            ),
+            JsonResults AS (
+              SELECT
+                id,
+                id_place,
+                id_place_issuer,
+                id_company,
+                nr_atendimento,
+                observation,
+                created_at,
+                JSON_ARRAYAGG(JSON_OBJECT('question', q.question, 'answer', q.answer)) AS issuer_order
+              FROM (
+                SELECT 
+                  id,
+                  id_place,
+                  id_place_issuer,
+                  id_company,
+                  nr_atendimento,
+                  observation,
+                  created_at,
+                  'Detalhe do paciente' AS question,
+                  patient_detail AS answer
+                FROM TrrCallings
+                UNION ALL
+                SELECT 
+                  id,
+                  id_place,
+                  id_place_issuer,
+                  id_company,
+                  nr_atendimento,
+                  observation,
+                  created_at,
+                  'Classificação' AS question,
+                  label AS answer
+                FROM TrrCallings
+              ) q
+              GROUP BY id, id_place, id_place_issuer, id_company, nr_atendimento, observation, created_at
+            ),
+            QuestionAndAnswer AS (
+              SELECT
+                jr.id,
+                jr.id_place,
+                jr.id_place_issuer,
+                jr.id_company,
+                jr.nr_atendimento,
+                jr.observation,
+                jr.created_at,
+                jt.question,
+                jt.answer,
+                jr.issuer_order
+              FROM JsonResults jr,
+              JSON_TABLE(
+                jr.issuer_order,
+                '$[*]' COLUMNS (
+                  question VARCHAR(255) PATH '$.question',
+                  answer VARCHAR(255) PATH '$.answer'
+                )
+              ) AS jt
+            )
+            SELECT
+              QA.id,
+              QA.issuer_order,
+              QA.question,
+              QA.answer,
+              QA.id_place AS area_id,
+              QA.id_place_issuer,
+              QA.id_company,
+              QA.nr_atendimento,
+              QA.observation,
+              QA.created_at,
+              UNIX_TIMESTAMP(QA.created_at) AS created_at_timestamp,
+              '83dd3749-40ee-4f6c-9ece-c8456dc042da' AS product_id,
+              'Neonpass Room' AS product_name,
+              TCIS.unresolved,
+              UNIX_TIMESTAMP(TCIS.unresolved) AS unresolved_timestamp,
+              TCIS.taken,
+              UNIX_TIMESTAMP(TCIS.taken) AS taken_timestamp,
+              TCIS.in_progress,
+              UNIX_TIMESTAMP(TCIS.in_progress) AS in_progress_timestamp,
+              TCIS.cancelled,
+              UNIX_TIMESTAMP(TCIS.cancelled) AS cancelled_timestamp,
+              TCIS.resolved,
+              UNIX_TIMESTAMP(TCIS.resolved) AS resolved_timestamp,
+              TCIS.last_status_at
+            FROM QuestionAndAnswer QA
+            JOIN StatusPivot TCIS 
+              ON TCIS.id_trr_calling = QA.id
+            ORDER BY TCIS.last_status_at ASC;
+    batching:
+      count: 10000
+      period: 20s
+
+pipeline:
+  processors:
+  - label: processor_get_request_id
+    bloblang: |
+      root = this
+      root.request_id = "%s%s".format(this.id, this.question)
+      root.request_id = root.request_id.hash("md5").encode("hex")
+
+  - label: processor_get_company_name
+    branch:
+      result_map: 'root.company = this'
+      processors:
+      - sql_select:
+          columns: ["*"]
+          table: companies
+          where: id_company = ?
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          args_mapping: '[ this.id_company ]'
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+
+  - label: processor_set_father_and_grandfather_information
+    processors:
+      - branch:
+          request_map: root = this
+          result_map: |
+            root.father_id = if this.length() > 0 {
+              if this.0.father_id != null { this.0.father_id } else { "1" }
+            } else {
+              "1"
+            }
+            root.father_name = if this.length() > 0 {
+              if this.0.father_id != null { this.0.father_name } else { "SEM PAI" }
+            } else {
+              "SEM PAI"
+            }
+            root.grandfather_id = if this.length() > 0 {
+              if this.0.grandfather_id != null { this.0.grandfather_id } else { "2" }
+            } else {
+              "2"
+            }
+            root.grandfather_name = if this.length() > 0 {
+              if this.0.grandfather_id != null { this.0.grandfather_name } else { "SEM AVÔ" }
+            } else {
+              "SEM AVÔ"
+            }
+          processors:
+          - sql_raw:
+              driver: mysql
+              conn_max_open: ${MAX_OPEN_CONNECTIONS}
+              dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+              query: |
+                select
+                  father.id_place as father_id,
+                  father.name as father_name,
+                  grandfather.id_place as grandfather_id,
+                  grandfather.name as grandfather_name
+                from shared_api_contracts.placebetweenrelationship pbr
+                join shared_api_contracts.placerelationships pr on pr.id_place_relationship = pbr.id_relationship
+                join shared_api_contracts.places father on father.id_place = pr.id_child
+                join shared_api_contracts.places grandfather on grandfather.id_place = pr.id_parent
+                where pbr.id_child =  ?;
+              args_mapping: '[ this.id_place_issuer ]'
+
+  - label: processor_enrich_floor_name
+    bloblang: |
+      root = this
+      root.floor_name = "%s %s".format(this.father_name, this.grandfather_name)
+
+  - label: processor_set_issuer_and_issuer_room
+    processors:
+      - branch:
+          request_map: root = this
+          result_map: |
+            root.place_issuer_name = if this.length() > 0 {
+              this.0.name
+            } else {
+              "Não informado"
+            }
+          processors:
+          - sql_raw:
+              driver: mysql
+              conn_max_open: ${MAX_OPEN_CONNECTIONS}
+              dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+              query: |
+                SELECT name
+                FROM shared_api_contracts.places
+                WHERE id_place = ?;
+              args_mapping: '[ this.id_place_issuer ]'
+
+  - label: processor_set_area_name
+    processors:
+      - branch:
+          request_map: root = this
+          result_map: |
+            root.area_name = if this.length() > 0 {
+              this.0.name
+            } else {
+              "Não informado"
+            }
+          processors:
+          - sql_raw:
+              driver: mysql
+              conn_max_open: ${MAX_OPEN_CONNECTIONS}
+              dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+              query: |
+                SELECT name
+                FROM shared_api_contracts.places
+                WHERE id_place = ?;
+              args_mapping: '[ this.area_id ]'
+
+  - label: processor_enrich_sla
+    bloblang: |
+      root = this
+      root.sla = if this.resolved != NULL {
+        this.resolved_timestamp.number() - this.created_at_timestamp.number()
+      } else { NULL }
+
+  - label: processor_enrich_classification
+    bloblang: |
+      root = this
+      root.classification = if this.sla == NULL {
+        NULL
+      } else if this.sla <= 300 {
+        "1 a 5 mins"
+      } else if this.sla <= 600 {
+        "6 a 10 mins"
+      } else if this.sla <= 1200 {
+        "11 a 20 mins"
+      } else if this.sla <= 1800 {
+        "21 a 30 mins"
+      } else if this.sla <= 3600 {
+        "31 a 60 mins"
+      } else {
+        "+ 60 mins"
+      } 
+
+  - label: processor_set_params
+    bloblang: |
+      root = this
+      root.through_nursing = 0
+      root.diet_release = 0
+      root.quantity = 0
+      root.value = 0
+      root.modified_at = if this.taken_timestamp != NULL {
+        if this.in_progress_timestamp != NULL && this.in_progress_timestamp < this.taken {
+          this.in_progress
+        } else {
+          this.taken
+        }
+      } else {
+        if this.this.in_progress_timestamp != NULL {
+          this.in_progress
+        } else {
+          NULL
+        }
+      }
+      root.modified_by = NULL
+      root.modified_by_name = NULL
+      root.finished_at = this.resolved
+      root.finished_by = NULL
+      root.finished_by_name = NULL
+      root.cancelled_at = this.cancelled
+      root.cancelled_by = NULL
+      root.cancelled_by_name = NULL
+      this.contested_at = NULL
+      root.operation_id = NULL
+      root.request_type = "TRR"
+
+  - label: processor_set_status
+    bloblang: |
+      root = this
+      root.status = if this.resolved != NULL {
+        "Concluído"
+      } else if this.cancelled != NULL {
+        "Cancelado"
+      } else if this.taken != NULL || this.in_progress != NULL {
+        "Em andamento"
+      } else {
+        "Recebido"
+      }
+
+  - label: processor_set_order_number_null
+    bloblang: |
+      root = this
+      root.order_number = NULL
+
+  - label: processor_check_nr_atendimento
+    bloblang: |
+      root = this
+      root.nr_atendimento = if this.nr_atendimento.number(0) != 0 {
+        this.nr_atendimento.number()
+      } else {
+        null
+      }
+
+  # - label: ""
+  #   log:
+  #     level: WARN
+  #     fields_mapping: |
+  #       root.teste = this.teste
+  #     message: ""
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS `requests` (
+            `request_id` varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `order_id` varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `company_id` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `company_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `lat` float DEFAULT NULL,
+            `lng` float DEFAULT NULL,
+            `father_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `father_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `grandfather_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `grandfather_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `product_id` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `product_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `issuer` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `orders_issuer` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `floor_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `area_id` varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `area` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `through_nursing` tinyint(1) NOT NULL,
+            `issuer_room` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `issuer_order` json NOT NULL,
+            `order_source` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `diet_release` tinyint(1) NOT NULL,
+            `question` text COLLATE utf8mb4_unicode_ci NOT NULL,
+            `answer` text COLLATE utf8mb4_unicode_ci,
+            `quantity` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `value` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `created_at` datetime NOT NULL,
+            `modified_at` datetime DEFAULT NULL,
+            `modified_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `modified_by_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `finished_at` datetime DEFAULT NULL,
+            `finished_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `finished_by_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `cancelled_at` datetime DEFAULT NULL,
+            `cancelled_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `cancelled_by_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `contested_at` datetime DEFAULT NULL,
+            `status` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `sla` int DEFAULT NULL,
+            `classification` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `observation` text COLLATE utf8mb4_unicode_ci,
+            `operation_id` varchar(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `request_type` varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `order_number` int DEFAULT NULL,
+            `nr_atendimento` bigint DEFAULT NULL,
+            PRIMARY KEY (`request_id`),
+            KEY `created_at_idx` (`created_at`),
+            KEY `created_at_company_id_idx` (`created_at`,`company_id`),
+            KEY `idx_requests_company_product_created` (`company_id`,`product_id`,`created_at`),
+            KEY `idx_requests_company_product_modified` (`company_id`,`product_id`,`modified_at`),
+            KEY `idx_requests_company_product_finished` (`company_id`,`product_id`,`finished_at`),
+            KEY `idx_requests_company_product_cancelled` (`company_id`,`product_id`,`cancelled_at`),
+            KEY `idx_requests_company_product_contested` (`company_id`,`product_id`,`contested_at`),
+            KEY `company_product_order_number_idx` (`company_id`,`product_id`,`order_number`),
+            KEY `company_product_nr_atendimento_idx` (`company_id`,`product_id`,`nr_atendimento`),
+            KEY `idx_requests_order` (`order_id`),
+            KEY `idx_requests_endoscopy_teams` (`company_id`,`area`(50),`created_at`,`question`(100)),
+            KEY `idx_requests_company_orders_issuer` (`company_id`,`orders_issuer`),
+            KEY `idx_requests_company_product_type_order` (`company_id`,`product_id`,`request_type`,`order_id`),
+            KEY `idx_requests_company_product_type_created` (`company_id`,`product_id`,`request_type`,`created_at` DESC)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        query:
+          REPLACE INTO requests VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        args_mapping: |
+          root = [
+            this.request_id,
+            this.id,
+            this.id_company,
+            this.company.0.name,
+            this.company.0.lat,
+            this.company.0.lng,
+            this.father_id,
+            this.father_name,
+            this.grandfather_id,
+            this.grandfather_name,
+            this.product_id,
+            this.product_name,
+            this.place_issuer_name,
+            this.area_id,
+            this.floor_name,
+            this.area_id,
+            this.area_name,
+            this.through_nursing,
+            this.place_issuer_name,
+            this.issuer_order,
+            this.place_issuer_name,
+            this.diet_release,
+            this.question,
+            this.answer,
+            this.quantity,
+            this.value,
+            this.created_at,
+            this.modified_at,
+            this.modified_by,
+            this.modified_by_name,
+            this.finished_at,
+            this.finished_by,
+            this.finished_by_name,
+            this.cancelled_at,
+            this.cancelled_by,
+            this.cancelled_by_name,
+            this.contested_at,
+            this.status,
+            this.sla,
+            this.classification,
+            this.observation,
+            this.operation_id,
+            this.request_type,
+            this.order_number,
+            this.nr_atendimento
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${MAIN_USERNAME}:${MAIN_PASSWORD}@tcp(${MAIN_CONNHOST}:${MAIN_CONNPORT})/benthos?${MAIN_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('enriched_trr', ?)
+          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+        args_mapping: root = [ this.last_status_at ]

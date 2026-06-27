@@ -1,0 +1,841 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              O.order_id,
+              O.id_form,
+              O.id_company,
+              O.content AS 'order',
+              O.display_name AS 'patient',
+              O.ordered_at AS 'created_at',
+              IF(
+                JSON_SEARCH(
+                  JSON_EXTRACT(
+                    O.content,
+                    '$[*]'
+                  ),
+                  'one',
+                  '%ieta%',
+                  null,
+                  '$[*].question'
+                ) IS NOT NULL,
+                TRUE,
+                FALSE
+              ) AS "diet_release",
+              question,
+              answer,
+              id_field,
+              room.id_place AS 'id_place',
+              room.name AS 'room',
+              area.name AS 'area_name',
+              O.ordered_to AS 'area_id',
+              F.title,
+              COALESCE(F.id_product, O.id_product) AS id_product,
+              O.department_issuer,
+              O.issuer,
+              department.name AS 'department_name',
+              UNIX_TIMESTAMP(O.ordered_at) AS ordered_at_timestamp,
+              OS.created_at AS 'order_status_created_at',
+              FES.concatenate AS 'concatenate',
+              O.order_number
+            FROM shared_api_reports.orderstatuses OS FORCE INDEX(idx_orderstatuses_created_at_order_id)
+            JOIN shared_api_reports.orders AS O ON O.order_id = OS.order_id
+            LEFT JOIN (
+                SELECT 
+                    Oin.order_id, 
+                    jt.question, 
+                    jt.answer, 
+                    jt.id_field
+                FROM 
+                    shared_api_reports.orders Oin
+                JOIN JSON_TABLE(
+                    Oin.content,
+                    '$[*]' COLUMNS (
+                        question VARCHAR(255) PATH '$.question',
+                        answer VARCHAR(255) PATH '$.answer',
+                        id_field VARCHAR(36) PATH '$.id_field'
+                    )
+                ) AS jt
+                WHERE Oin.deleted = false
+            ) AS questions ON questions.order_id = O.order_id
+            JOIN shared_api_contracts.places AS room ON room.id_place = O.issuer
+            JOIN shared_api_contracts.places AS area ON area.id_place = O.ordered_to
+            LEFT JOIN shared_api_contracts.places AS department ON department.id_place = O.department_issuer
+            LEFT JOIN shared_api_forms.forms F on F.id_form = O.id_Form
+            LEFT JOIN shared_api_forms.formetlsetup FES FORCE INDEX(PRIMARY) ON FES.id_form = O.id_form
+            WHERE
+              OS.created_at >= COALESCE(
+                  (SELECT DT.reference_date FROM benthos.datatracker DT WHERE DT.source = 'requests'),
+                  '2000-01-01 00:00:00'
+              )
+              AND O.deleted = false
+            ORDER BY OS.created_at asc;
+    batching:
+      count: 5000
+      period: 20s
+
+pipeline:
+  processors:
+  - label: processor_get_company_name
+    branch:
+      result_map: 'root.company = this'
+      processors:
+      - sql_select:
+          columns: ["*"]
+          table: companies
+          where: id_company = ?
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          args_mapping: '[ this.id_company ]'
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+
+  - label: processor_filter_empty_companies
+    bloblang: |
+      root = if this.company == null || this.company.length() < 1 { deleted() }
+
+  - label: processor_get_father_place
+    branch:
+      result_map: 'root.place = this'
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              F.id_place AS father_id,
+              G.id_place AS grandfather_id,
+              F.name AS father_name,
+              G.name AS grandfather_name
+            FROM placebetweenrelationship BR
+            JOIN placerelationships R ON R.id_place_relationship = BR.id_relationship 
+            JOIN places F ON F.id_place = R.id_child
+            JOIN places G ON G.id_place = R.id_parent
+            WHERE BR.id_child = ?
+          args_mapping: '[ this.id_place ]'
+
+  - label: processor_check_place
+    switch:
+    - check: this.place == NULL || this.place.length()  < 1
+      processors:
+        - branch:
+            result_map: 'root.place = this'
+            processors:
+            - sql_raw:
+                driver: mysql
+                conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+                query: |
+                  SELECT 
+                    F.id_place AS father_id,
+                    G.id_place AS grandfather_id,
+                    F.name AS father_name,
+                    G.name AS grandfather_name
+                  FROM shared_api_contracts.placerelationships R1
+                  LEFT JOIN shared_api_contracts.placerelationships R2 ON R2.id_child = R1.id_parent
+                  LEFT JOIN shared_api_contracts.places F ON F.id_place = R1.id_parent
+                  LEFT JOIN shared_api_contracts.places G ON G.id_place = R2.id_parent
+                  WHERE R1.id_child = ?;
+                args_mapping: '[ this.id_place ]'
+
+  - label: processor_filter_empty_father_and_grandfather
+    bloblang: |
+      root = this
+      root.place = if this.place == NULL || this.place.length()  < 1 {
+        [{
+            "father_id": "1",
+            "father_name": "SEM PAI",
+            "grandfather_id": "2",
+            "grandfather_name": "SEM AVÔ",
+        }]
+      }
+      root.place.0.father_id = if this.place.0.father_id == NULL {
+        "1"
+      }
+      root.place.0.father_name = if this.place.0.father_name == NULL {
+        "SEM PAI"
+      }
+      root.place.0.grandfather_id = if this.place.0.grandfather_id == NULL {
+        "2"
+      }
+      root.place.0.grandfather_name = if this.place.0.grandfather_name == NULL {
+        "SEM AVÕ"
+      }
+
+  - label: processor_set_product_info
+    switch:
+    - check: this.id_product != NULL || this.id_product != ""
+      processors:
+        - branch:
+            request_map: root = this
+            result_map: |
+              if this.length() > 0 {
+                root.product_id = this.0.id_product
+                root.product_name = this.0.name
+              }
+            processors:
+              - sql_raw:
+                  driver: mysql
+                  conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                  dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+                  query: >
+                    SELECT
+                      id_product,
+                      name
+                    FROM shared_api_contracts.products
+                    WHERE id_product = ?;
+                  args_mapping: '[ this.id_product ]'
+
+  - label: processor_check_product
+    bloblang: |
+      root = this
+      root.product_id = if this.product_id == null {
+        "83dd3749-40ee-4f6c-9ece-c8456dc042da"
+      }
+      root.product_name = if this.product_name == null {
+        "Neonpass Room"
+      }
+
+  - label: processor_issuer_name_treatment
+    bloblang: |
+      root = this
+      root.patient = if this.patient == null {
+        "Sem identificação"
+      } else {
+        this.patient.capitalize().re_replace_all("(\\B\\w|\\s)", "")
+      }
+
+  - label: processor_set_order_source
+    bloblang: |
+      root = this
+      root.order_source = if this.ordered_at_timestamp.int64() < 1709123514 || this.department_issuer == this.issuer || this.department_issuer == NULL {
+        "Paciente"
+      } else {
+        this.department_name
+      }
+
+  - label: processor_get_request_id
+    bloblang: |
+      root = this
+      root.request_id = "%s%s".format(this.order_id, this.question)
+      root.request_id = root.request_id.hash("md5").encode("hex")
+
+  - label: processor_enrich_floor_name
+    bloblang: |
+      root = this
+      root.floor_name = "%s %s".format(this.place.0.father_name, this.place.0.grandfather_name)
+    
+  - label: processor_enrich_order_opening_date
+    branch:
+      result_map: 'root.opened_OS = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                OS.created_at,
+                OS.created_by,
+                UNIX_TIMESTAMP(OS.created_at) AS timestamp
+              FROM shared_api_reports.orders O
+              JOIN shared_api_reports.orderstatuses OS ON O.order_id = OS.order_id
+              JOIN shared_api_reports.statuses S ON S.status_id = OS.status_id AND S.name = 'Em aberto'
+              WHERE O.order_id = ?;
+            args_mapping: '[ this.order_id ]'
+
+  - label: processor_enrich_order_modifying_date
+    branch:
+      result_map: 'root.modified_OS = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                OS.created_at,
+                OS.created_by,
+                UNIX_TIMESTAMP(OS.created_at) AS timestamp
+              FROM shared_api_reports.orders O
+              JOIN shared_api_reports.orderstatuses OS ON O.order_id = OS.order_id
+              JOIN shared_api_reports.statuses S ON S.status_id = OS.status_id AND S.name = 'Em andamento'
+              WHERE O.order_id = ?;
+            args_mapping: '[ this.order_id ]'
+
+  - label: processor_enrich_order_cancelling_date
+    branch:
+      result_map: 'root.cancelled_OS = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                OS.created_at,
+                OS.created_by,
+                UNIX_TIMESTAMP(OS.created_at) AS timestamp
+              FROM shared_api_reports.orders O
+              JOIN shared_api_reports.orderstatuses OS ON O.order_id = OS.order_id
+              JOIN shared_api_reports.statuses S ON S.status_id = OS.status_id AND S.name = 'Cancelado'
+              WHERE O.order_id = ?;
+            args_mapping: '[ this.order_id ]'
+
+  - label: processor_enrich_order_contesting_date
+    branch:
+      result_map: 'root.contested_OS = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                OS.created_at,
+                OS.created_by,
+                UNIX_TIMESTAMP(OS.created_at) AS timestamp
+              FROM shared_api_reports.orders O
+              JOIN shared_api_reports.orderstatuses OS ON O.order_id = OS.order_id
+              JOIN shared_api_reports.statuses S ON S.status_id = OS.status_id AND S.name = 'Contestado'
+              WHERE O.order_id = ?;
+            args_mapping: '[ this.order_id ]'
+
+  - label: processor_enrich_order_uncontesting_date
+    branch:
+      result_map: 'root.uncontested_OS = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                OS.created_at,
+                OS.created_by,
+                UNIX_TIMESTAMP(OS.created_at) AS timestamp
+              FROM shared_api_reports.orders O
+              JOIN shared_api_reports.orderstatuses OS ON O.order_id = OS.order_id
+              JOIN shared_api_reports.statuses S ON S.status_id = OS.status_id AND S.name = 'Incontestado'
+              WHERE O.order_id = ?;
+            args_mapping: '[ this.order_id ]'
+  
+  - label: processor_enrich_order_closing_date
+    branch:
+      result_map: 'root.closed_OS = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                OS.created_at,
+                OS.created_by,
+                UNIX_TIMESTAMP(OS.created_at) AS timestamp
+              FROM shared_api_reports.orders O
+              JOIN shared_api_reports.orderstatuses OS ON O.order_id = OS.order_id
+              JOIN shared_api_reports.statuses S ON S.status_id = OS.status_id AND S.name = 'Concluído'
+              WHERE O.order_id = ?;
+            args_mapping: '[ this.order_id ]'
+
+  - label: processor_enrich_order_current_status
+    branch:
+      result_map: 'root.current_status = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                S.name
+              FROM shared_api_reports.orders O
+              JOIN shared_api_reports.orderstatuses OS ON O.order_status_id = OS.order_status_id
+              JOIN shared_api_reports.statuses S ON S.status_id = OS.status_id
+              WHERE O.order_id = ?;
+            args_mapping: '[ this.order_id ]'
+
+  - label: processor_enrich_sla
+    bloblang: |
+      root = this
+      root.sla = if this.opened_OS != NULL && this.opened_OS.length() > 0 && this.closed_OS.length() > 0 {
+        this.closed_OS.0.timestamp - this.opened_OS.0.timestamp
+      } else { NULL }
+
+  - label: processor_enrich_status
+    bloblang: |
+      root = this
+      root.modified_at = if this.modified_OS != NULL && this.modified_OS.length() > 0 {
+        this.modified_OS.0.created_at
+      } else { NULL }
+      root.modified_by = if this.modified_OS != NULL && this.modified_OS.length() > 0 {
+        this.modified_OS.0.created_by
+      } else { NULL }
+      root.cancelled_at = if this.cancelled_OS != NULL && this.cancelled_OS.length() > 0 {
+        this.cancelled_OS.0.created_at
+      } else { NULL }
+      root.cancelled_by = if this.cancelled_OS != NULL && this.cancelled_OS.length() > 0 {
+        this.cancelled_OS.0.created_by
+      } else { NULL }
+      root.contested_at = if this.contested_OS != NULL && this.contested_OS.length() > 0 {
+        this.contested_OS.0.created_at
+      } else { NULL }
+      root.finished_at = if this.closed_OS != NULL && this.closed_OS.length() > 0 {
+        this.closed_OS.0.created_at
+      } else { NULL }
+      root.finished_by = if this.closed_OS != NULL && this.closed_OS.length() > 0 {
+        this.closed_OS.0.created_by
+      } else { NULL }
+      root.uncontested_at = if this.uncontested_OS != NULL && this.uncontested_OS.length() > 0 {
+        this.uncontested_OS.0.created_at
+      } else { NULL }
+
+  - label: processor_enrich_classification
+    bloblang: |
+      root = this
+      root.classification = if this.sla == NULL {
+        NULL
+      } else if this.sla <= 300 {
+        "1 a 5 mins"
+      } else if this.sla <= 600 {
+        "6 a 10 mins"
+      } else if this.sla <= 1200 {
+        "11 a 20 mins"
+      } else if this.sla <= 1800 {
+        "21 a 30 mins"
+      } else if this.sla <= 3600 {
+        "31 a 60 mins"
+      } else {
+        "+ 60 mins"
+      } 
+
+  - label: processor_enrich_through_nursing
+    bloblang: |
+      root = this
+      root.through_nursing = this.area_name == "Enfermagem" 
+
+  - label: processor_filter_empty_question_or_empty_answer
+    bloblang: |
+      root = if this.question == NULL || this.answer == NULL { deleted() }
+
+  - label: processor_set_value
+    bloblang: |
+      root = this
+      root.value = if this.question.contains("R$") {
+        this.question.split("R$").1.trim()
+      } else if this.answer.contains("R$") {
+        this.answer.split("R$").1.trim()
+      } else {
+        "0"
+      }
+    
+  - label: processor_check_action_label
+    branch:
+      result_map: 'root.action_label = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_forms?${INPUT_CONNOPTS}
+            query: |
+              SELECT FAT.action_label AS label
+              FROM shared_api_forms.fields F
+              JOIN shared_api_forms.fieldactions FA ON FA.id_field_action = F.id_action
+              JOIN shared_api_forms.fieldactiontypes FAT ON FAT.id_field_action_type = FA.id_action_type
+              WHERE F.id_field = ?;
+            args_mapping: '[ this.id_field ]'
+
+  - label: processor_check_component_label
+    branch:
+      result_map: 'root.component_label = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_forms?${INPUT_CONNOPTS}
+            query: |
+              SELECT FCT.component_label AS label
+              FROM shared_api_forms.fields F
+              JOIN shared_api_forms.fieldcomponenttypes FCT ON FCT.id_component_type = F.id_field_component
+              WHERE F.id_field = ?;
+            args_mapping: '[ this.id_field ]'
+
+  - label: processor_set_quantity
+    bloblang: |
+      root = this
+      root.quantity = if this.question.contains("1.") && this.diet_release == "1" {
+        "1"
+      } else if this.diet_release == "1" {
+        "0"
+      } else if this.answer.contains("quantidade:") {
+        this.answer.split("quantidade:").1.trim()
+      } else {
+        "1"
+      }
+
+  - label: processor_enrich_question
+    bloblang: |
+      root = this
+      root.order_json = this.order.parse_json()
+      root.enriched_question = if this.title == NULL ||
+        this.action_label.0.label == "Modal" ||
+        this.component_label.0.label == "Card" ||
+        this.component_label.0.label == "Quantidade" {
+        this.question.split("R$").0
+      } else {
+        this.title
+      }
+      root.enriched_answer = if this.component_label.0.label != "Quantidade" && this.component_label.0.label != "Checkbox" {
+        root.order_json.map_each(this.answer.string()).join(",").replace_all(",", ", ")
+      } else {
+        this.answer
+      }
+
+  - label: processor_enrich_answer
+    switch:
+      - check: this.concatenate != NULL
+        processors:
+          - bloblang: |
+              root = this
+              root.enriched_answer = if this.concatenate.bool() == true {
+                root.order_json.map_each(this.answer.string()).join(", ").replace_all(",", ", ")
+              } else {
+                this.answer
+              }
+      - check: this.component_label.0.label != "Quantidade" && this.component_label.0.label != "Checkbox"
+        processors:
+          - bloblang: |
+              root = this
+              root.enriched_answer = root.order_json.map_each(this.answer.string()).join(",").replace_all(",", ", ")
+      - processors:
+        - bloblang: |
+            root = this
+            root.enriched_answer = this.answer
+
+  - label: processor_delete_row_on_condensed_answer
+    bloblang: |
+      root = if this.enriched_answer != this.answer && this.order_json.0.question != this.question {
+        deleted()
+      }
+
+  - label: processor_set_info_employee_modified_by
+    switch:
+    - check: this.modified_by != NULL
+      processors:
+        - branch:
+            result_map: 'root.info_modified_by = this'
+            processors:
+            - sql_raw:
+                driver: mysql
+                conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_integrador_sap?${INPUT_CONNOPTS}
+                query: |
+                  SELECT
+                    S.fullname
+                  FROM np_integrador_sap.sapusers S
+                  JOIN np_integrador_sap.filials F ON F.code = S.unit
+                  WHERE S.registration = ? AND F.company_id = ?;
+                args_mapping: '[ this.modified_by, this.id_company ]'
+    - processors:
+      - bloblang: |
+          root = this
+          root.info_modified_by = [{
+            "fullname": NULL
+          }]
+
+  - label: processor_set_info_employee_finished_by
+    switch:
+    - check: this.finished_by != NULL
+      processors:
+        - branch:
+            result_map: 'root.info_finished_by = this'
+            processors:
+            - sql_raw:
+                driver: mysql
+                conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_integrador_sap?${INPUT_CONNOPTS}
+                query: |
+                  SELECT
+                    S.fullname
+                  FROM np_integrador_sap.sapusers S
+                  JOIN np_integrador_sap.filials F ON F.code = S.unit
+                  WHERE S.registration = ? AND F.company_id = ?;
+                args_mapping: '[ this.finished_by, this.id_company ]'
+    - processors:
+      - bloblang: |
+          root = this
+          root.info_finished_by = [{
+            "fullname": NULL
+          }]
+
+  - label: processor_set_info_employee_cancelled_by
+    switch:
+    - check: this.cancelled_by != NULL
+      processors:
+        - branch:
+            result_map: 'root.info_cancelled_by = this'
+            processors:
+            - sql_raw:
+                driver: mysql
+                conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_integrador_sap?${INPUT_CONNOPTS}
+                query: |
+                  SELECT
+                    S.fullname
+                  FROM np_integrador_sap.sapusers S
+                  JOIN np_integrador_sap.filials F ON F.code = S.unit
+                  WHERE S.registration = ? AND F.company_id = ?;
+                args_mapping: '[ this.cancelled_by, this.id_company ]'
+    - processors:
+      - bloblang: |
+          root = this
+          root.info_cancelled_by = [{
+            "fullname": NULL
+          }]
+
+  - label: processor_rescue_previous_observations
+    branch:
+      result_map: 'root.observation = this'
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_forms?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                GROUP_CONCAT(observation SEPARATOR ' | ') AS observation
+              FROM shared_api_reports.orderstatuses
+              WHERE order_id = ?
+              order by created_at ASC;
+            args_mapping: '[ this.order_id ]'
+
+  - label: processor_validate_observation
+    bloblang: |
+      root = this
+      root.observation = if this.observation == NULL || this.observation.length() < 1 {
+        NULL
+      } else {
+        this.observation.0.observation
+      }
+
+  - label: processor_add_operation_id_on_neonpass_or
+    switch:
+      - check: this.product_name == "Neonpass OR"
+        processors:
+        - branch:
+            result_map: 'root.operation = this'
+            processors:
+            - sql_raw:
+                driver: mysql
+                conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+                query: |
+                  SELECT
+                    OSM.id_operation
+                  FROM shared_api_or_events.orders O
+                  JOIN shared_api_or_events.systemactionexecutions SAE ON SAE.id = O.id_system_action_execution
+                  JOIN shared_api_or_events.operationsurgicalmarks OSM ON OSM.id_surgical_mark = SAE.id_surgical_mark
+                  WHERE O.id = ?;
+                args_mapping: '[ this.order_id ]'
+
+  - label: processor_set_operation_id
+    bloblang: |
+      root = this
+      root.operation_id = if this.operation != NULL && this.operation.length() > 0 {
+        this.operation.0.id_operation
+      } else {
+        NULL
+      }
+
+  - label: processor_set_request_type
+    bloblang: |
+      root = this
+      root.request_type = "Solicitações"
+
+  - label: processor_set_nr_atendimento
+    branch:
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.nr_atendimento = this.0.nr_atendimento
+        } else {
+          root.nr_atendimento = null
+        }
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                nr_atendimento
+              FROM shared_api_reports.transportorders
+              WHERE id_order = ?;
+            args_mapping: '[ this.order_id ]'
+
+
+  # - label: processor_log_prod
+  #   switch:
+  #     - check: this.product_id != "83dd3749-40ee-4f6c-9ece-c8456dc042da"
+  #       processors:
+  #         - log:
+  #             level: WARN
+  #             fields_mapping: |
+  #               root.product_id = this.product_id
+  #               root.product_name = this.product_name
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS `requests` (
+            `request_id` varchar(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `order_id` varchar(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `company_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `company_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `lat` float DEFAULT NULL,
+            `lng` float DEFAULT NULL,
+            `father_id` char(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `father_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `grandfather_id` char(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `grandfather_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `product_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `product_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `issuer` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `orders_issuer` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `floor_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `area_id` varchar(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `area` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `through_nursing` tinyint(1) NOT NULL,
+            `issuer_room` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `issuer_order` json NOT NULL,
+            `order_source` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `diet_release` tinyint(1) NOT NULL,
+            `question` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `answer` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+            `quantity` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `value` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `created_at` datetime NOT NULL,
+            `modified_at` datetime DEFAULT NULL,
+            `modified_by` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `modified_by_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `finished_at` datetime DEFAULT NULL,
+            `finished_by` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `finished_by_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `cancelled_at` datetime DEFAULT NULL,
+            `cancelled_by` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `cancelled_by_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `contested_at` datetime DEFAULT NULL,
+            `status` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `sla` int DEFAULT NULL,
+            `classification` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `observation` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+            `operation_id` varchar(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `request_type` varchar(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+            `order_number` int DEFAULT NULL,
+            `nr_atendimento` bigint DEFAULT NULL,
+            PRIMARY KEY (`request_id`),
+            KEY `created_at_idx` (`created_at`),
+            KEY `created_at_company_id_idx` (`created_at`,`company_id`),
+            KEY `idx_requests_company_product_created` (`company_id`,`product_id`,`created_at`),
+            KEY `idx_requests_company_product_modified` (`company_id`,`product_id`,`modified_at`),
+            KEY `idx_requests_company_product_finished` (`company_id`,`product_id`,`finished_at`),
+            KEY `idx_requests_company_product_cancelled` (`company_id`,`product_id`,`cancelled_at`),
+            KEY `idx_requests_company_product_contested` (`company_id`,`product_id`,`contested_at`),
+            KEY `company_product_order_number_idx` (`company_id`,`product_id`,`order_number`),
+            KEY `company_product_nr_atendimento_idx` (`company_id`,`product_id`,`nr_atendimento`),
+            KEY `idx_requests_order` (`order_id`),
+            KEY `idx_requests_endoscopy_teams` (`company_id`,`area`(50),`created_at`,`question`(100)),
+            KEY `idx_requests_company_orders_issuer` (`company_id`,`orders_issuer`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        query:
+          REPLACE INTO requests VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        args_mapping: |
+          root = [
+            this.request_id,
+            this.order_id,
+            this.id_company,
+            this.company.0.name,
+            this.company.0.lat,
+            this.company.0.lng,
+            this.place.0.father_id,
+            this.place.0.father_name,
+            this.place.0.grandfather_id,
+            this.place.0.grandfather_name,
+            this.product_id,
+            this.product_name,
+            this.patient,
+            this.issuer,
+            this.floor_name,
+            this.area_id,
+            this.area_name,
+            this.through_nursing,
+            this.room,
+            this.order,
+            this.order_source,
+            this.diet_release,
+            this.enriched_question,
+            this.enriched_answer,
+            this.quantity,
+            this.value,
+            this.created_at,
+            this.modified_at,
+            this.modified_by,
+            this.info_modified_by.0.fullname,
+            this.finished_at,
+            this.finished_by,
+            this.info_finished_by.0.fullname,
+            this.cancelled_at,
+            this.cancelled_by,
+            this.info_cancelled_by.0.fullname,
+            this.contested_at,
+            this.current_status.0.name,
+            this.sla,
+            this.classification,
+            this.observation,
+            this.operation_id,
+            this.request_type,
+            this.order_number,
+            this.nr_atendimento
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${MAIN_USERNAME}:${MAIN_PASSWORD}@tcp(${MAIN_CONNHOST}:${MAIN_CONNPORT})/benthos?${MAIN_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('requests', ?)
+          ON DUPLICATE KEY UPDATE
+            reference_date = IF(reference_date < VALUES(reference_date), VALUES(reference_date), reference_date);
+        args_mapping: root = [ this.order_status_created_at ]

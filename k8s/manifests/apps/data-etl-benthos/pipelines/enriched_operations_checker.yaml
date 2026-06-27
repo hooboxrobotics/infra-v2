@@ -1,0 +1,211 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+          query: |
+            WITH lastReference AS (
+              SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00') AS reference_date
+              FROM nproomdb_realtime.datatracker d
+              WHERE d.source = 'enriched_operations_checker'
+            ),
+            operations AS (
+              SELECT
+                distinct e.operation_id
+              FROM nproomdb_realtime.enrichedoperations e
+              CROSS JOIN lastReference lr
+              WHERE
+                e.marker_name = 'endOfRoomOccupancy'
+                AND e.mark_reached_at >= lr.reference_date
+            )
+            SELECT
+              e.operation_id,
+              MIN(e.mark_reached_at) AS mark_reached_at
+            FROM operations o
+            JOIN nproomdb_realtime.enrichedoperations e
+              ON e.operation_id = o.operation_id
+            WHERE e.company_id IS NULL
+              OR e.company_name IS NULL
+              OR e.product_id IS NULL
+              OR e.product_name IS NULL
+              OR e.block_id IS NULL
+              OR e.block IS NULL
+              OR e.room_id IS NULL
+              OR e.room IS NULL
+              OR e.doctor_name IS NULL
+              OR e.expected_starting_date IS NULL
+              OR e.operation_description IS NULL
+              OR e.operation_number IS NULL
+              OR e.operation_duration IS NULL
+              OR e.operation_type IS NULL
+            GROUP BY e.operation_id
+            ORDER BY MIN(e.mark_reached_at) ASC;
+    batching:
+      count: 1000
+      period: 10s
+
+pipeline:
+  processors:
+  - label: processor_get_operation_enrichment
+    branch:
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.company_id = this.0.company_id
+          root.company_name = this.0.company_name
+          root.product_id = this.0.product_id
+          root.product_name = this.0.product_name
+          root.block_id = this.0.block_id
+          root.block = this.0.block
+          root.room_id = this.0.room_id
+          root.room = this.0.room
+          root.doctor_name = this.0.doctor_name
+          root.expected_starting_date = this.0.expected_starting_date
+          root.operation_description = this.0.operation_description
+          root.operation_number = this.0.operation_number
+          root.operation_duration = this.0.operation_duration
+          root.operation_type = this.0.operation_type
+        }
+
+      processors:
+      - sql_raw:
+          driver: mysql
+          dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+          query: |
+            SELECT
+              MAX(company_id) AS company_id,
+              MAX(company_name) AS company_name,
+              MAX(product_id) AS product_id,
+              MAX(product_name) AS product_name,
+              MAX(block_id) AS block_id,
+              MAX(block) AS block,
+              MAX(room_id) AS room_id,
+              MAX(room) AS room,
+              MAX(doctor_name) AS doctor_name,
+              MAX(expected_starting_date) AS expected_starting_date,
+              MAX(operation_description) AS operation_description,
+              MAX(operation_number) AS operation_number,
+              MAX(operation_duration) AS operation_duration,
+              MAX(operation_type) AS operation_type
+            FROM nproomdb_realtime.enrichedoperations
+            WHERE operation_id = ?;
+          args_mapping: '[ this.operation_id ]'
+
+output:
+  broker:
+    pattern: fan_out_sequential
+    outputs:
+    - label: output_update
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS enrichedoperations (
+            enriched_operation_id                           CHAR(36)      NOT NULL  PRIMARY KEY,
+            operation_id                                    CHAR(36)      NOT NULL,
+            company_id                                      CHAR(36)      NOT NULL,
+            company_name                                    VARCHAR(255)  NOT NULL,
+            product_id                                      CHAR(36),
+            product_name                                    VARCHAR(255),
+            block_id                                        CHAR(36),
+            block                                           VARCHAR(255),
+            room_id                                         CHAR(36),
+            room                                            VARCHAR(255),
+            time_and_movement_name                          VARCHAR(255),
+            surgical_time_name                              VARCHAR(255),
+            mark_reached_at                                 DATETIME,
+            mark_created_at                                 DATETIME,
+            marker_name                                     VARCHAR(255),
+            system_action_id                                CHAR(36),
+            system_action_name                              VARCHAR(255),
+            doctor_name                                     VARCHAR(255),
+            expected_starting_date                          DATETIME,
+            operation_description                           TEXT,
+            operation_number                                INTEGER,
+            operation_duration                              INTEGER,
+            operation_type                                  VARCHAR(255),
+            order_id                                        VARCHAR(36),
+            order_finished_at                               DATETIME,
+            booking_status                                  VARCHAR(50),
+            delta_room_occupancy                            INTEGER,
+            delta_end_of_anesthesya_room_exit               INTEGER,
+            delta_operation                                 INTEGER,
+            delta_anesthesya                                INTEGER,
+            delta_patient_in_room_start_of_operation        INTEGER,
+            delta_patient_in_room_start_of_anesthesya       INTEGER,
+            delta_start_of_anesthesya_start_of_operation    INTEGER,
+            delta_room_rotation                             INTEGER,
+            room_rotation_status                            VARCHAR(50),
+            delta_cme_withdrawal                            INTEGER,
+            cme_withdrawal_status                           VARCHAR(50),
+            cme_impact                                      INTEGER,
+            patient_delay                                   INTEGER
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+        query: |
+          UPDATE enrichedoperations
+          SET
+            company_id = COALESCE(?, company_id),
+            company_name = COALESCE(?, company_name),
+            product_id = COALESCE(?, product_id),
+            product_name = COALESCE(?, product_name),
+            block_id = COALESCE(?, block_id),
+            block = COALESCE(?, block),
+            room_id = COALESCE(?, room_id),
+            room = COALESCE(?, room),
+            doctor_name = COALESCE(?, doctor_name),
+            expected_starting_date = COALESCE(?, expected_starting_date),
+            operation_description = COALESCE(?, operation_description),
+            operation_number = COALESCE(?, operation_number),
+            operation_duration = COALESCE(?, operation_duration),
+            operation_type = COALESCE(?, operation_type)
+          WHERE operation_id = ?;
+        args_mapping: |
+          root = [
+            this.company_id,
+            this.company_name,
+            this.product_id,
+            this.product_name,
+            this.block_id,
+            this.block,
+            this.room_id,
+            this.room,
+            this.doctor_name,
+            this.expected_starting_date,
+            this.operation_description,
+            this.operation_number,
+            this.operation_duration,
+            this.operation_type,
+            this.operation_id
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO nproomdb_realtime.datatracker (source, reference_date)
+          VALUES ('enriched_operations_checker', ?)
+          ON DUPLICATE KEY UPDATE
+            reference_date = IF(reference_date < VALUES(reference_date), VALUES(reference_date), reference_date);
+        args_mapping: root = [ this.mark_reached_at ]

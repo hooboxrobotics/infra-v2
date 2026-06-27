@@ -1,0 +1,131 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_api_tickets?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              start_time AS start,
+              DATE_ADD(start_time, INTERVAL 3599 SECOND) AS end,
+              SUM(FilteredTickets.ticket_status_id = 3) AS exits,
+              FilteredTickets.id_company AS company_id
+            FROM (
+              SELECT
+                T.*,
+                DATE_FORMAT(T.updated_at, '%Y-%m-%d %H:00:00') AS start_time
+              FROM
+                np_api_tickets.tickets T
+              WHERE
+                T.updated_at >= COALESCE(
+                  (SELECT DT.reference_date FROM benthos.datatracker DT WHERE DT.source = 'tickets_exits'),
+                  '2000-01-01 00:00:00'
+                )
+            ) AS FilteredTickets
+            GROUP BY
+              start_time,
+              FilteredTickets.id_company
+            ORDER BY
+              start_time;
+    batching:
+      count: 10000
+      period: 20s     
+
+pipeline:
+  processors:
+  - label: processor_generate_id
+    bloblang: |
+      root = this
+      root.ticket_exit_id = "%s%s".format(this.start, this.company_id)
+      root.ticket_exit_id = root.ticket_exit_id.hash("md5").encode("hex")
+
+  - label: processor_get_headquarter_information
+    branch:
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 && this.0.id_headquarters != NULL {
+          root.headquarters_id = this.0.id_headquarters
+        }
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              c.id_headquarters
+            FROM shared_api_contracts.companies c
+            WHERE c.id_company = ?;
+          args_mapping: '[ this.company_id ]'
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output_saving_enriched_data
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS ticketsexits (
+            ticket_exit_id     CHAR(36)      NOT NULL  PRIMARY KEY,
+            start              TIMESTAMP     NOT NULL,
+            end                TIMESTAMP     NOT NULL,
+            exits              INT           NOT NULL,
+            company_id         CHAR(36)      NOT NULL,
+            headquarters_id    CHAR(36)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+        query: |
+          INSERT INTO ticketsexits (
+            ticket_exit_id,
+            start,
+            end,
+            exits,
+            company_id,
+            headquarters_id
+          ) VALUES (?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            start = COALESCE(VALUES(start), start),
+            end = COALESCE(VALUES(end), end),
+            exits = COALESCE(VALUES(exits), exits),
+            company_id = COALESCE(VALUES(company_id), company_id),
+            headquarters_id = COALESCE(VALUES(headquarters_id), headquarters_id);
+        args_mapping: |
+          root = [
+            this.ticket_exit_id,
+            this.start,
+            this.end,
+            this.exits,
+            this.company_id,
+            this.headquarters_id
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${MAIN_USERNAME}:${MAIN_PASSWORD}@tcp(${MAIN_CONNHOST}:${MAIN_CONNPORT})/benthos?${MAIN_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('tickets_exits', ?)
+          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+        args_mapping: root = [ this.start ]

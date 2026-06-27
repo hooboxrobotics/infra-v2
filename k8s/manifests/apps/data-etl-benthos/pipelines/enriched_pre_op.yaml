@@ -1,0 +1,253 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+          query: |
+            SELECT *
+            FROM (
+              SELECT
+                SM.achieved_at AS mark_reached_at,
+                SM.created_at AS mark_created_at,
+                TM.id_company AS company_id,
+                TM.id_product AS product_id,
+                UPPER(TM.name) AS time_and_movement_name,
+                UPPER(ST.name) AS surgical_time_name,
+                PP.id AS preparation_id,
+                PAB.id_place AS box_id,
+                TAMM.marker AS marker_name,
+                SA.id AS system_action_id,
+                UPPER(SA.name) AS system_action_name,
+                SM.id AS surgical_mark_id,
+                SAE.id AS system_action_execution_id,
+                OS.created_at AS order_status_created_at,
+                O.order_id AS order_id,
+                GREATEST(COALESCE(SAE.created_at, SM.created_at), COALESCE(OS.created_at, '1900-01-01 00:00:00')) AS created_at,
+                LEAST(COALESCE(SAE.created_at, SM.created_at), COALESCE(OS.created_at, '2900-01-01 00:00:00')) AS new_reference
+              FROM shared_api_or_events.surgicalmarks SM
+              JOIN shared_api_or_events.surgicaltimes ST on ST.id = SM.id_surgical_time
+              JOIN shared_api_or_events.timeandmovements TM on TM.id = ST.id_time_and_movement
+              JOIN shared_api_or_events.patientpreparationpreopmarks PPPM on PPPM.id_preop_mark = SM.id
+              JOIN shared_api_or_events.patientpreparation PP on PP.id = PPPM.id_patient_preparation
+              JOIN shared_api_or_events.patientadmissionbox PAB on PAB.id = PP.id_admission
+              LEFT JOIN shared_api_or_events.timeandmovementmarkers TAMM ON TAMM.id_surgical_time = SM.id_surgical_time
+              LEFT JOIN shared_api_or_events.systemactionexecutions SAE ON SAE.id_surgical_mark = SM.id
+              LEFT JOIN shared_api_or_events.systemactions SA ON SA.id = SAE.id_system_action
+              LEFT JOIN shared_api_or_events.orders Oor ON Oor.id_system_action_execution = SAE.id
+              LEFT JOIN shared_api_reports.orders O ON O.order_id = Oor.id
+              LEFT JOIN shared_api_reports.orderstatuses OS ON OS.order_id = O.order_id and OS.status_id = '3cddc9ac-62b6-440c-98e4-fe43cd9549e6'
+            ) AS result
+            JOIN (
+              SELECT COALESCE(
+                (SELECT DT.reference_date FROM benthos.datatracker DT WHERE DT.source = 'enriched_pre_op'),
+                '2000-01-01 00:00:00'
+              ) AS reference_date
+            ) AS ref ON 1=1
+            WHERE result.created_at >= ref.reference_date
+            ORDER BY result.created_at ASC;
+    batching:
+      count: 10000
+      period: 20s
+
+pipeline:
+  processors:
+  - label: processor_generate_table_id
+    bloblang: |
+      root = this
+      root.order_ref = if this.order_id != NULL {
+        this.order_id
+      } else {
+        ""
+      }
+      root.enriched_preop_id = "%s%s%s%s".format(this.preparation_id, this.surgical_mark_id, this.system_action_execution_id, this.order_ref)
+      root.enriched_preop_id = root.enriched_preop_id.hash("md5").encode("hex")
+
+  - label: processor_get_company_name
+    branch:
+      result_map: 'root.company = this'
+      processors:
+      - sql_select:
+          columns: ["*"]
+          table: companies
+          where: id_company = ?
+          driver: "mysql"
+          args_mapping: '[ this.company_id ]'
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+
+  - label: processor_get_block_and_room
+    branch:
+      result_map: 'root.place = this'
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              C.id_place AS child_id,
+              F.id_place AS father_id,
+              C.name AS child_name,
+              F.name AS father_name
+            FROM shared_api_contracts.placerelationships PR
+            JOIN shared_api_contracts.places C ON C.id_place = PR.id_child
+            JOIN shared_api_contracts.places F ON F.id_place = PR.id_parent
+            WHERE PR.id_child = ?
+          args_mapping: '[ this.box_id ]'
+
+  - label: processor_filter_empty_block_and_room
+    bloblang: |
+      root = this
+      root.room = if this.place.length() < 1 {
+        [{
+            "child_id": "1",
+            "father_id": 2,
+            "child_name": "NÃO ENCONTRADO",
+            "father_name": "NÃO ENCONTRADO"
+        }]
+      }
+
+  - label: processor_get_product_info
+    branch:
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 && this.0.name != NULL {
+          root.product_name = this.0.name
+        }
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                name
+              FROM shared_api_contracts.products
+              WHERE id_product = ?
+            args_mapping: '[ this.product_id ]'
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS enrichedpreop (
+            enriched_preop_id                               CHAR(36)      NOT NULL  PRIMARY KEY,
+            preparation_id                                  CHAR(36)      NOT NULL,
+            company_id                                      CHAR(36)      NOT NULL,
+            company_name                                    VARCHAR(255)  NOT NULL,
+            product_id                                      CHAR(36),
+            product_name                                    VARCHAR(255),
+            block_id                                        CHAR(36),
+            block                                           VARCHAR(255),
+            room_id                                         CHAR(36),
+            room                                            VARCHAR(255),
+            time_and_movement_name                          VARCHAR(255),
+            surgical_time_name                              VARCHAR(255),
+            mark_reached_at                                 DATETIME,
+            mark_created_at                                 DATETIME,
+            marker_name                                     VARCHAR(255),
+            system_action_id                                CHAR(36),
+            system_action_name                              VARCHAR(255),
+            order_id                                        VARCHAR(36),
+            order_finished_at                               DATETIME
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+        query: |
+          INSERT INTO enrichedpreop (
+            enriched_preop_id,
+            preparation_id,
+            company_id,
+            company_name,
+            product_id,
+            product_name,
+            block_id,
+            block,
+            room_id,
+            room,
+            time_and_movement_name,
+            surgical_time_name,
+            mark_reached_at,
+            mark_created_at,
+            marker_name,
+            system_action_id,
+            system_action_name,
+            order_id,
+            order_finished_at
+          ) VALUES(
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          )
+          ON DUPLICATE KEY UPDATE
+            preparation_id = VALUES(preparation_id),
+            company_id = VALUES(company_id),
+            company_name = VALUES(company_name),
+            product_id = VALUES(product_id),
+            product_name = VALUES(product_name),
+            block_id = VALUES(block_id),
+            block = VALUES(block),
+            room_id = VALUES(room_id),
+            room = VALUES(room),
+            time_and_movement_name = VALUES(time_and_movement_name),
+            surgical_time_name = VALUES(surgical_time_name),
+            mark_reached_at = VALUES(mark_reached_at),
+            mark_created_at = VALUES(mark_created_at),
+            marker_name = VALUES(marker_name),
+            system_action_id = VALUES(system_action_id),
+            system_action_name = VALUES(system_action_name),
+            order_id = VALUES(order_id),
+            order_finished_at = VALUES(order_finished_at);
+        args_mapping: |
+          root = [
+            this.enriched_preop_id,
+            this.preparation_id,
+            this.company_id,
+            this.company.0.name,
+            this.product_id,
+            this.product_name,
+            this.place.0.father_id,
+            this.place.0.father_name,
+            this.place.0.child_id,
+            this.place.0.child_name,
+            this.time_and_movement_name,
+            this.surgical_time_name,
+            this.mark_reached_at,
+            this.mark_created_at,
+            this.marker_name,
+            this.system_action_id,
+            this.system_action_name,
+            this.order_id,
+            this.order_status_created_at
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${MAIN_USERNAME}:${MAIN_PASSWORD}@tcp(${MAIN_CONNHOST}:${MAIN_CONNPORT})/benthos?${MAIN_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('enriched_preop', ?)
+          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+        args_mapping: root = [ this.new_reference ]

@@ -1,0 +1,296 @@
+logger:
+  level: DEBUG
+
+input:
+  label: input_sql
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+          query: |
+            WITH BenthosReference AS (
+              SELECT
+                COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00') AS reference_date
+              FROM benthos.datatracker D
+              WHERE D.source = 'transports_requests'
+            ),
+            UpdatedTransportOrders AS (
+              SELECT T.id_order
+              FROM shared_api_reports.transportorders T
+              JOIN BenthosReference BR
+              WHERE T.updated_at >= BR.reference_date
+            ),
+            UpdatedByStatus AS (
+              SELECT DISTINCT OS.order_id
+              FROM shared_api_reports.orderstatuses OS
+              JOIN shared_api_reports.transportorders T 
+                ON T.id_order = OS.order_id
+              JOIN BenthosReference BR
+              WHERE OS.created_at >= BR.reference_date
+            ),
+            ImpactedOrders AS (
+              SELECT id_order FROM UpdatedTransportOrders
+              UNION
+              SELECT order_id FROM UpdatedByStatus
+            ),
+            OrderedToAgg AS (
+              SELECT
+                OTTO.id_order,
+                JSON_ARRAYAGG(OTTO.id_ordered_to) AS ordered_to_ids,
+                JSON_ARRAYAGG(OTTO.created_at) AS ordered_to_created_at,
+                JSON_ARRAYAGG(OTTO.deleted_at) AS ordered_to_deleted_at
+              FROM ImpactedOrders IO
+              JOIN shared_api_reports.orderedtotransportorder OTTO ON OTTO.id_order = IO.id_order
+              GROUP BY OTTO.id_order
+            )
+            SELECT
+              T.id_order,
+              T.nr_atendimento,
+              T.created_at,
+              T.updated_at,
+              T.origin,
+              T.destination,
+              T.origin_unit,
+              T.destination_unit,
+              T.issuer AS issuer_id,
+              T.id_ordered_to,
+              OTTO.ordered_to_ids,
+              OTTO.ordered_to_created_at,
+              OTTO.ordered_to_deleted_at,
+              OS.order_status_id,
+              OS.status_id,
+              OS.created_at AS status_created_at,
+              OS.created_by
+            FROM shared_api_reports.transportorders T
+            JOIN ImpactedOrders IO 
+              ON IO.id_order = T.id_order
+            LEFT JOIN OrderedToAgg OTTO 
+              ON OTTO.id_order = T.id_order
+            JOIN shared_api_reports.orderstatuses OS
+              ON OS.order_id = T.id_order
+            ORDER BY OS.created_at ASC;
+    batching:
+      count: 10000
+      period: 20s
+
+pipeline:
+  processors:
+  - label: processor_create_etl_id
+    bloblang: |
+      root = this
+      root.etl_id = "%s%s".format(this.id_order, this.order_status_id)
+      root.etl_id = root.etl_id.hash("md5").encode("hex")
+
+  - label: processor_filter_ordered_to_ids
+    bloblang: |
+      root = this
+      root.saved = this.ordered_to_ids
+      let parsedIds = this.ordered_to_ids.or("[]").parse_json().catch([])
+      let parsedCreatedAts = this.ordered_to_created_at.or("[]").parse_json().catch([])
+      let parsedDeletedAts = this.ordered_to_deleted_at.or("[]").parse_json().catch([])
+      let statusTs = this.status_created_at.ts_parse("2006-01-02 15:04:05").ts_unix()
+      let firstFilter = $parsedIds.enumerated().map_each(element -> if $parsedCreatedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() <= $statusTs {
+          element.value
+        } else {
+          deleted()
+        }
+      )
+      root.ordered_to_ids = $firstFilter.enumerated().map_each(element -> if $parsedDeletedAts.index(element.index) == null || $parsedDeletedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() > $statusTs {
+          element.value
+        } else {
+          deleted()
+        }
+      )
+
+  - label: processor_get_users_info
+    branch:
+      request_map: root = this
+      result_map: |
+        let orderedToUsers = this.filter(u -> u.role == "ordered_to")
+        let issuerUser = this.filter(u -> u.role == "issuer")
+        let changedByUser = this.filter(u -> u.role == "changed_by")
+
+        root.ordered_to = $orderedToUsers.map_each(u -> {
+          "id_user": u.id_user,
+          "fullname": u.fullname
+        })
+        root.issuer = if $issuerUser.length() > 0 {
+          $issuerUser.0.fullname
+        } else {
+          null
+        }
+        root.status_changed_by = if $changedByUser.length() > 0 {
+          $changedByUser.0.fullname
+        } else {
+          null
+        }
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_users?${INPUT_CONNOPTS}
+            query: |
+              SELECT u.id_user, u.fullname, 'ordered_to' AS role
+              FROM shared_api_users.users u
+              JOIN JSON_TABLE(
+                ?, '$[*]' COLUMNS (id VARCHAR(36) PATH '$')
+              ) jt ON u.id_user = jt.id
+
+              UNION ALL
+
+              SELECT u.id_user, u.fullname, 'issuer' AS role
+              FROM shared_api_users.users u
+              WHERE u.id_user = ?
+
+              UNION ALL
+
+              SELECT u.id_user, u.fullname, 'changed_by' AS role
+              FROM shared_api_users.users u
+              WHERE u.id_user = ?
+            args_mapping: |
+              root = [
+                this.ordered_to_ids.string(),
+                this.issuer_id,
+                this.created_by
+              ]
+
+  - label: processor_get_status_name
+    branch:
+      request_map: root = this
+      result_map: |
+        root.status = if this.length() > 0 {
+          this.0.name
+        } else {
+          "STATUS NÃO CADASTRADO"
+        }
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                name
+              FROM shared_api_reports.statuses
+              WHERE status_id = ?;
+            args_mapping: '[ this.status_id ]'
+
+  - label: processor_get_current_status
+    branch:
+      request_map: root = this
+      result_map: |
+        root.current_status = if this.length() > 0 {
+          1
+        } else {
+          0
+        }
+      processors:
+        - sql_raw:
+            driver: mysql
+            conn_max_open: ${MAX_OPEN_CONNECTIONS}
+            dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+            query: |
+              SELECT
+                order_id
+              FROM shared_api_reports.orders
+              WHERE order_id = ? AND order_status_id = ?;
+            args_mapping: '[ this.id_order, this.order_status_id ]'
+
+  - label: debug_log
+    log:
+      level: DEBUG
+      message: "reference=${! this.status_created_at }"
+
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output_main_data
+      sql_raw:
+        driver: mysql
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS transportrequests (
+            etl_id            VARCHAR(36)   NOT NULL PRIMARY KEY,
+            order_id          VARCHAR(36)   NOT NULL,
+            created_at        DATETIME,
+            updated_at        DATETIME,
+            origin            VARCHAR(255),
+            destination       VARCHAR(255),
+            issuer_id         VARCHAR(36),
+            issuer            VARCHAR(255),
+            ordered_to_ids    JSON,
+            ordered_to        JSON,
+            status            VARCHAR(255),
+            status_date       DATETIME,
+            status_changed_by VARCHAR(255),
+            current_status    TINYINT(1)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+        query: |
+          INSERT INTO transportrequests (
+            etl_id,
+            order_id,
+            created_at,
+            updated_at,
+            origin,
+            destination,
+            issuer_id,
+            issuer,
+            ordered_to_ids,
+            ordered_to,
+            status,
+            status_date,
+            status_changed_by,
+            current_status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            created_at = COALESCE(VALUES(created_at), created_at),
+            updated_at = COALESCE(VALUES(updated_at), updated_at),
+            origin = COALESCE(VALUES(origin), origin),
+            destination = COALESCE(VALUES(destination), destination),
+            issuer_id = COALESCE(VALUES(issuer_id), issuer_id),
+            issuer = COALESCE(VALUES(issuer), issuer),
+            ordered_to_ids = COALESCE(VALUES(ordered_to_ids), ordered_to_ids),
+            ordered_to = COALESCE(VALUES(ordered_to), ordered_to),
+            status = COALESCE(VALUES(status), status),
+            status_date = COALESCE(VALUES(status_date), status_date),
+            status_changed_by = COALESCE(VALUES(status_changed_by), status_changed_by),
+            current_status = COALESCE(VALUES(current_status), current_status);
+        args_mapping: |
+          root = [
+            this.etl_id,
+            this.id_order,
+            this.created_at,
+            this.updated_at,
+            this.origin,
+            this.destination,
+            this.issuer_id,
+            this.issuer,
+            this.ordered_to_ids.string(),
+            this.ordered_to.string(),
+            this.status,
+            this.status_created_at,
+            this.status_changed_by,
+            this.current_status
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${MAIN_USERNAME}:${MAIN_PASSWORD}@tcp(${MAIN_CONNHOST}:${MAIN_CONNPORT})/benthos?${MAIN_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('transports_requests', ?)
+          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+        args_mapping: root = [ this.status_created_at ]

@@ -1,0 +1,408 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+          query: |
+            SELECT
+              E.enriched_operation_id,
+              E.operation_id,
+              E.mark_created_at,
+              E.marker_name,
+              E.surgical_time_name,
+              E.system_action_name,
+              E.order_finished_at
+            FROM nproomdb_realtime.enrichedoperations E
+            CROSS JOIN (
+              SELECT COALESCE(
+                (SELECT DT.reference_date
+                FROM nproomdb_realtime.datatracker DT
+                WHERE DT.source = 'enriched_operations_additions'),
+                '2000-01-01 00:00:00'
+              ) AS reference_date
+            ) ref
+            WHERE
+              E.mark_created_at >= ref.reference_date
+              OR E.order_finished_at >= ref.reference_date
+            ORDER BY E.mark_created_at ASC;
+    batching:
+      count: 10000
+      period: 20s
+
+pipeline:
+  processors:
+  - label: processor_compute_delta_by_surgical_time_name
+    switch:
+      - check: this.surgical_time_name == "SAÍDA DE SALA"
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 {
+                  if this.0.delta_room_occupancy != NULL {
+                    root.delta_room_occupancy = this.0.delta_room_occupancy
+                  }
+                  if this.0.delta_end_of_anesthesya_room_exit != NULL {
+                    root.delta_end_of_anesthesya_room_exit = this.0.delta_end_of_anesthesya_room_exit
+                  }
+                  if this.0.cme_impact != NULL {
+                    root.cme_impact = this.0.cme_impact
+                  }
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, patient_in_room.mark_reached_at, room_exit.mark_reached_at) AS delta_room_occupancy,
+                        TIMESTAMPDIFF(MINUTE, end_anesthesia.mark_reached_at, room_exit.mark_reached_at) AS delta_end_of_anesthesya_room_exit,
+                        TIMESTAMPDIFF(MINUTE, room_exit.mark_reached_at, cme_withdrawal.order_finished_at) AS cme_impact
+                      FROM nproomdb_realtime.enrichedoperations room_exit
+                      LEFT JOIN nproomdb_realtime.enrichedoperations patient_in_room 
+                        ON patient_in_room.operation_id = room_exit.operation_id
+                        AND patient_in_room.surgical_time_name = 'PACIENTE EM SALA'
+                      LEFT JOIN nproomdb_realtime.enrichedoperations end_anesthesia
+                        ON end_anesthesia.operation_id = room_exit.operation_id 
+                        AND (
+                          end_anesthesia.surgical_time_name = 'TÉRMINO DA ANESTESIA'
+                          OR end_anesthesia.surgical_time_name = 'TÉRMINO DE ANESTESIA'
+                        )
+                      LEFT JOIN nproomdb_realtime.enrichedoperations cme_withdrawal
+                        ON cme_withdrawal.operation_id = room_exit.operation_id 
+                        AND (
+                          cme_withdrawal.system_action_name = 'RETIRADA CME'
+                          OR cme_withdrawal.system_action_name = 'RETIRADA DA CME'
+                        )
+                        AND cme_withdrawal.order_finished_at IS NOT NULL
+                      WHERE room_exit.enriched_operation_id = ?;
+                    args_mapping: '[ this.enriched_operation_id ]'
+      - check: this.surgical_time_name == "TÉRMINO CIRURGIA" || this.surgical_time_name == "TÉRMINO DA CIRURGIA" || this.surgical_time_name == "TÉRMINO DE CIRURGIA"
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 {
+                  if this.0.delta_operation != NULL {
+                    root.delta_operation = this.0.delta_operation
+                  }
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, start_op.mark_reached_at, end_op.mark_reached_at) AS delta_operation
+                      FROM nproomdb_realtime.enrichedoperations end_op
+                      JOIN nproomdb_realtime.enrichedoperations start_op ON start_op.operation_id = end_op.operation_id
+                      WHERE end_op.enriched_operation_id = ?
+                        AND (
+                          start_op.surgical_time_name = 'INÍCIO CIRURGIA'
+                          OR start_op.surgical_time_name = 'INÍCIO DA CIRURGIA'
+                          OR start_op.surgical_time_name = 'INÍCIO DE CIRURGIA'
+                        );
+                    args_mapping: '[ this.enriched_operation_id ]'
+      - check: this.surgical_time_name == "INÍCIO DA ANESTESIA" || this.surgical_time_name == "INÍCIO DE ANESTESIA"                                                          
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 && this.0.delta_patient_in_room_start_of_anesthesya != NULL {
+                  root.delta_patient_in_room_start_of_anesthesya = this.0.delta_patient_in_room_start_of_anesthesya
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, start_op.mark_reached_at, end_op.mark_reached_at) AS delta_patient_in_room_start_of_anesthesya
+                      FROM nproomdb_realtime.enrichedoperations end_op
+                      JOIN nproomdb_realtime.enrichedoperations start_op ON start_op.operation_id = end_op.operation_id
+                      WHERE
+                        end_op.enriched_operation_id = ?
+                        AND start_op.surgical_time_name = 'PACIENTE EM SALA';
+                    args_mapping: '[ this.enriched_operation_id ]'
+      - check: this.surgical_time_name == "TÉRMINO DA ANESTESIA" || this.surgical_time_name == "TÉRMINO DE ANESTESIA"
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 && this.0.delta_anesthesya != NULL {
+                  root.delta_anesthesya = this.0.delta_anesthesya
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, start_op.mark_reached_at, end_op.mark_reached_at) AS delta_anesthesya
+                      FROM nproomdb_realtime.enrichedoperations end_op
+                      JOIN nproomdb_realtime.enrichedoperations start_op
+                        ON start_op.operation_id = end_op.operation_id
+                        AND (
+                          start_op.surgical_time_name = 'INÍCIO DA ANESTESIA'
+                          OR start_op.surgical_time_name = 'INÍCIO DE ANESTESIA'
+                        )
+                      WHERE end_op.enriched_operation_id = ?;
+                    args_mapping: '[ this.enriched_operation_id ]'
+      - check: this.surgical_time_name == "INÍCIO CIRURGIA" || this.surgical_time_name == "INÍCIO DA CIRURGIA" || this.surgical_time_name == "INÍCIO DE CIRURGIA" 
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 && this.0.delta_patient_in_room_start_of_operation != NULL {
+                  root.delta_patient_in_room_start_of_operation = this.0.delta_patient_in_room_start_of_operation
+                }
+                if this.length() > 0 && this.0.delta_start_of_anesthesya_start_of_operation != NULL {
+                  root.delta_start_of_anesthesya_start_of_operation = this.0.delta_start_of_anesthesya_start_of_operation
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, patient_in_room.mark_reached_at, start_op.mark_reached_at) AS delta_patient_in_room_start_of_operation,
+                        TIMESTAMPDIFF(MINUTE, start_anesthesya.mark_reached_at, start_op.mark_reached_at) AS delta_start_of_anesthesya_start_of_operation
+                      FROM nproomdb_realtime.enrichedoperations start_op
+                      JOIN nproomdb_realtime.enrichedoperations patient_in_room
+                        ON patient_in_room.operation_id = start_op.operation_id
+                        AND patient_in_room.surgical_time_name = 'PACIENTE EM SALA'
+                      JOIN nproomdb_realtime.enrichedoperations start_anesthesya
+                        ON start_anesthesya.operation_id = start_op.operation_id
+                        AND (start_anesthesya.surgical_time_name = "INÍCIO DA ANESTESIA" 
+                          OR start_anesthesya.surgical_time_name = "INÍCIO DE ANESTESIA"
+                        )
+                      WHERE start_op.enriched_operation_id = ?;
+                    args_mapping: '[ this.enriched_operation_id ]'
+      - check: this.surgical_time_name == "PACIENTE EM SALA"
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 && this.0.patient_delay != NULL {
+                  root.patient_delay = this.0.patient_delay
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, EO.expected_starting_date, EO.mark_reached_at) AS patient_delay
+                      FROM nproomdb_realtime.enrichedoperations EO
+                      WHERE EO.expected_starting_date IS NOT NULL
+                        AND EO.mark_reached_at IS NOT NULL
+                        AND EO.enriched_operation_id = ?;
+                    args_mapping: '[ this.enriched_operation_id ]'
+
+  - label: processor_compute_delta_by_system_action_name
+    switch:
+      - check: this.system_action_name == "LIMPEZA DA SALA" || this.system_action_name == "LIMPEZA DE SALA"
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 && this.0.delta_room_rotation != NULL {
+                  root.delta_room_rotation = this.0.delta_room_rotation
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, EO.mark_created_at, EO.order_finished_at) AS delta_room_rotation
+                      FROM nproomdb_realtime.enrichedoperations EO
+                      WHERE EO.order_finished_at IS NOT NULL
+                        AND EO.enriched_operation_id = ?;
+                    args_mapping: '[ this.enriched_operation_id ]'
+      - check: this.system_action_name == "RETIRADA CME" || this.system_action_name == "RETIRADA DA CME"
+        processors:
+          - branch:
+              request_map: root = this
+              result_map: |
+                if this.length() > 0 && this.0.delta_cme_withdrawal != NULL {
+                  root.delta_cme_withdrawal = this.0.delta_cme_withdrawal
+                }
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/nproomdb_realtime?${OUTPUT_CONNOPTS}
+                    query: >
+                      SELECT
+                        TIMESTAMPDIFF(MINUTE, EO.mark_created_at, EO.order_finished_at) AS delta_cme_withdrawal
+                      FROM nproomdb_realtime.enrichedoperations EO
+                      WHERE EO.order_finished_at IS NOT NULL
+                        AND EO.enriched_operation_id = ?;
+                    args_mapping: '[ this.enriched_operation_id ]'
+
+  - label: processor_room_rotation_status
+    bloblang: |
+      root = this
+      if this.delta_room_rotation != NULL {
+        root.room_rotation_status = if this.delta_room_rotation <= 25 {
+          "CONFORME"
+        } else {
+          "NÃO CONFORME"
+        }
+      }
+      if this.delta_cme_withdrawal != NULL {
+        root.cme_withdrawal_status = if this.delta_cme_withdrawal <= 15 {
+          "CONFORME"
+        } else {
+          "NÃO CONFORME"
+        }
+      }
+
+  # - label: processor_log_prod
+  #   switch:
+  #     - check: this.surgical_time_name == "INÍCIO CIRURGIA" || this.surgical_time_name == "INÍCIO DA CIRURGIA" || this.surgical_time_name == "INÍCIO DE CIRURGIA"
+  #       processors:
+  #         - log:
+  #             level: WARN
+  #             fields_mapping: |
+  #               root.delta_room_occupancy = this.delta_room_occupancy
+  #               root.delta_end_of_anesthesya_room_exit = this.delta_end_of_anesthesya_room_exit
+  #               root.delta_operation = this.delta_operation
+  #               root.delta_anesthesya = this.delta_anesthesya
+  #               root.delta_patient_in_room_start_of_operation = this.delta_patient_in_room_start_of_operation
+  #               root.delta_patient_in_room_start_of_anesthesya = this.delta_patient_in_room_start_of_anesthesya
+  #               root.delta_room_rotation = this.delta_room_rotation
+  #               root.room_rotation_status = this.room_rotation_status
+  #               root.delta_cme_withdrawal = this.delta_cme_withdrawal
+  #               root.cme_withdrawal_status = this.cme_withdrawal_status
+  #               root.cme_impact = this.cme_impact
+  #               root.patient_delay = this.patient_delay
+  #               root.operation_id = this.operation_id
+  #               root.delta_start_of_anesthesya_start_of_operation = this.delta_start_of_anesthesya_start_of_operation
+      # - processors:
+      #   - log:
+      #       level: WARN
+      #       fields_mapping: |
+      #         root = this
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS enrichedoperations (
+            enriched_operation_id                           CHAR(36)      NOT NULL  PRIMARY KEY,
+            operation_id                                    CHAR(36)      NOT NULL,
+            company_id                                      CHAR(36)      NOT NULL,
+            company_name                                    VARCHAR(255)  NOT NULL,
+            product_id                                      CHAR(36),
+            product_name                                    VARCHAR(255),
+            block_id                                        CHAR(36),
+            block                                           VARCHAR(255),
+            room_id                                         CHAR(36),
+            room                                            VARCHAR(255),
+            time_and_movement_name                          VARCHAR(255),
+            surgical_time_name                              VARCHAR(255),
+            mark_reached_at                                 DATETIME,
+            mark_created_at                                 DATETIME,
+            marker_name                                     VARCHAR(255),
+            system_action_id                                CHAR(36),
+            system_action_name                              VARCHAR(255),
+            doctor_name                                     VARCHAR(255),
+            expected_starting_date                          DATETIME,
+            operation_description                           TEXT,
+            operation_number                                INTEGER,
+            operation_duration                              INTEGER,
+            operation_type                                  VARCHAR(255),
+            order_id                                        VARCHAR(36),
+            order_finished_at                               DATETIME,
+            booking_status                                  VARCHAR(50),
+            delta_room_occupancy                            INTEGER,
+            delta_end_of_anesthesya_room_exit               INTEGER,
+            delta_operation                                 INTEGER,
+            delta_anesthesya                                INTEGER,
+            delta_patient_in_room_start_of_operation        INTEGER,
+            delta_patient_in_room_start_of_anesthesya       INTEGER,
+            delta_start_of_anesthesya_start_of_operation    INTEGER,
+            delta_room_rotation                             INTEGER,
+            room_rotation_status                            VARCHAR(50),
+            delta_cme_withdrawal                            INTEGER,
+            cme_withdrawal_status                           VARCHAR(50),
+            cme_impact                                      INTEGER,
+            patient_delay                                   INTEGER
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+        query:
+          UPDATE enrichedoperations SET
+            delta_room_occupancy = COALESCE(?, delta_room_occupancy),
+            delta_end_of_anesthesya_room_exit = COALESCE(?, delta_end_of_anesthesya_room_exit),
+            delta_operation = COALESCE(?, delta_operation),
+            delta_anesthesya = COALESCE(?, delta_anesthesya),
+            delta_patient_in_room_start_of_operation = COALESCE(?, delta_patient_in_room_start_of_operation),
+            delta_patient_in_room_start_of_anesthesya = COALESCE(?, delta_patient_in_room_start_of_anesthesya),
+            delta_room_rotation = COALESCE(?, delta_room_rotation),
+            room_rotation_status = COALESCE(?, room_rotation_status),
+            delta_cme_withdrawal = COALESCE(?, delta_cme_withdrawal),
+            cme_withdrawal_status = COALESCE(?, cme_withdrawal_status),
+            cme_impact = COALESCE(?, cme_impact),
+            patient_delay = COALESCE(?, patient_delay),
+            delta_start_of_anesthesya_start_of_operation = COALESCE(?, delta_start_of_anesthesya_start_of_operation)
+          where operation_id = ?;
+        args_mapping: |
+          root = [
+            this.delta_room_occupancy,
+            this.delta_end_of_anesthesya_room_exit,
+            this.delta_operation,
+            this.delta_anesthesya,
+            this.delta_patient_in_room_start_of_operation,
+            this.delta_patient_in_room_start_of_anesthesya,
+            this.delta_room_rotation,
+            this.room_rotation_status,
+            this.delta_cme_withdrawal,
+            this.cme_withdrawal_status,
+            this.cme_impact,
+            this.patient_delay,
+            this.delta_start_of_anesthesya_start_of_operation,
+            this.operation_id
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('enriched_operations_additions', ?)
+          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+        args_mapping: root = [ this.mark_created_at ]

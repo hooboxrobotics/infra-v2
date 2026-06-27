@@ -1,0 +1,231 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  sql_raw:
+    driver: mysql
+    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+    dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+    query: |
+      SELECT
+        R.id_rating,
+        R.issuer,
+        R.display_name,
+        R.id_company,
+        R.subject,
+        R.rating,
+        R.observation,
+        R.created_at,
+        P.id_place,
+        P.name AS place_name,
+        PT.name AS place_type
+      FROM shared_api_reports.ratings R
+      JOIN shared_api_reports.ratingnps NPS ON NPS.id_rating = R.id_rating
+      LEFT JOIN shared_api_reports.orders O ON O.order_id = R.id_order
+      JOIN shared_api_contracts.places P ON P.name = R.issuer
+      JOIN shared_api_contracts.placetypes PT ON PT.id_place_type = P.id_place_type
+      ORDER BY R.display_name ;
+
+pipeline:
+  processors:
+  - label: processor_enrich_rating_number
+    bloblang: |
+      root = this
+      root.rating_number = if this.rating == "Excelente" {
+        5
+      } else if this.rating == "Bom" {
+        4
+      } else if this.rating == "Neutro" {
+        3
+      } else if this.rating == "Ruim" {
+        2
+      } else if this.rating == "Péssimo" {
+        1
+      } else if this.rating == "Não se aplica" {
+        0
+      } else {
+        -1
+      }
+
+  - label: processor_add_rating_desc
+    bloblang: |
+      root = this
+      root.rating_desc = if this.rating == "Excelente" {
+        "5. Excelente"
+      } else if this.rating == "Bom" {
+        "4. Bom"
+      } else if this.rating == "Neutro" {
+        "3. Neutro"
+      } else if this.rating == "Ruim" {
+        "2. Ruim"
+      } else if this.rating == "Péssimo" {
+        "1. Péssimo"
+      } else if this.rating == "Não se aplica" {
+        "0. Não se aplica"
+      }
+
+  - label: processor_filter_invalid_rate_numbers
+    bloblang: |
+      root = if this.rating_number < 0 { deleted() }
+
+  - label: processor_get_company_name
+    branch:
+      result_map: 'root.company = this'
+      processors:
+      - sql_select:
+          columns: ["*"]
+          table: companies
+          where: id_company = ?
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          args_mapping: '[ this.id_company ]'
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+
+  - label: processor_filter_empty_companies
+    bloblang: |
+      root = if this.company.length() < 1 { deleted() }
+
+  - label: processor_get_father_place
+    branch:
+      result_map: 'root.place = this'
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              F.id_place AS father_id,
+              G.id_place AS grandfather_id,
+              F.name AS father_name,
+              G.name AS grandfather_name
+            FROM placebetweenrelationship BR
+            JOIN placerelationships R ON R.id_place_relationship = BR.id_relationship 
+            JOIN places F ON F.id_place = R.id_child
+            JOIN places G ON G.id_place = R.id_parent
+            WHERE BR.id_child = ?
+          args_mapping: '[ this.id_place ]'
+
+  - label: processor_filter_empty_father_and_grandfather
+    bloblang: |
+      root = if this.place.length() < 1 { deleted() }
+
+  - label: processor_issuer_name_treatment
+    bloblang: |
+      root = this
+      root.patient = if this.patient == null {
+        "Posto"
+      } else{
+        this.patient.capitalize().re_replace_all("(\\B\\w|\\s)", "")
+      }
+
+  - label: processor_enrich_floor_name
+    bloblang: |
+      root = this
+      root.floor_name = "%s %s".format(this.place.0.father_name, this.place.0.grandfather_name)
+
+  - label: processor_look_for_nps
+    branch:
+      result_map: 'root.ratingnps = this'
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              rnps.id_network_promoter_score
+            FROM shared_api_reports.ratingnps rnps
+            WHERE rnps.id_rating = ?
+          args_mapping: '[ this.id_rating ]'
+
+  - label: processor_enrich_classification
+    switch:
+      - check: this.ratingnps != NULL && this.ratingnps.length() > 0
+        processors:
+          - bloblang: |
+              root = this
+              root.classification = "Avaliação de satisfação"
+              root.grouper = this.ratingnps.0.id_network_promoter_score
+      - processors:
+        - bloblang: |
+            root = this
+            root.classification = "Avaliação de pedido"
+            root.grouper = this.id_rating
+
+  # - label: processor_log_prod
+  #   switch:
+  #     - check: this.ratingnps == NULL
+  #       processors:
+  #         - log:
+  #             level: WARN
+  #             fields_mapping: |
+  #               root.grouper = this.grouper
+  #               root.nps = this.ratingnps
+  #               root.classification = this.classification
+  #     - processors:
+  #       - log:
+  #           level: WARN
+  #           fields_mapping: |
+  #             root.nada = "nada"
+
+output:
+  label: output
+  sql_raw:
+    driver: mysql
+    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+    dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+    init_statement: |2
+      CREATE TABLE IF NOT EXISTS ratings (
+        id_rating         CHAR(36)      NOT NULL  PRIMARY KEY,
+        id_company        CHAR(36)      NOT NULL,
+        issuer            VARCHAR(255)  NOT NULL,
+        father_id         CHAR(36)      NOT NULL,
+        grandfather_id    CHAR(36)      NOT NULL,
+        father_name       VARCHAR(255)  NOT NULL,
+        grandfather_name  VARCHAR(255)  NOT NULL,
+        floor_name        VARCHAR(255)  NOT NULL,
+        lat               FLOAT         NULL,
+        lng               FLOAT         NULL,
+        display_name      VARCHAR(255)  NOT NULL,
+        company_name      VARCHAR(255)  NULL,
+        subject           VARCHAR(255)  NOT NULL,
+        rating            VARCHAR(255)  NOT NULL,
+        rating_number     INT           NOT NULL,
+        rating_desc       VARCHAR(255)  NOT NULL,
+        observation       VARCHAR(255)  NULL,
+        classification    VARCHAR(255)  NULL,
+        grouper           CHAR(36)      NOT NULL,
+        created_at        DATETIME      NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+    query:
+      REPLACE INTO ratings VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    args_mapping: |
+      root = [
+        this.id_rating,
+        this.id_company,
+        this.issuer,
+        this.place.0.father_id,
+        this.place.0.grandfather_id,
+        this.place.0.father_name,
+        this.place.0.grandfather_name,
+        this.floor_name,
+        this.company.0.lat,
+        this.company.0.lng,
+        this.display_name,
+        this.company.0.name,
+        this.subject,
+        this.rating,
+        this.rating_number,
+        this.rating_desc,
+        this.observation,
+        this.classification,
+        this.grouper,
+        this.created_at
+      ]

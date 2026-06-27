@@ -1,0 +1,527 @@
+logger:
+  level: DEBUG
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_api_tickets?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              T.ticket_id,
+              T.ticket_status_id,
+              TS.name AS ticket_status_name,
+              T.ticket_config_id,
+              TC.ticket_type_id,
+              TT.name AS ticket_type_name,
+              TT.description AS ticket_type_description,
+              TC.checklist_id,
+              CL.name AS checklist_name,
+              CL.content AS checklist_content,
+              T.badge,
+              T.from,
+              T.to,
+              T.subject,
+              T.place_id,
+              T.start_datetime,
+              T.end_datetime,
+              T.created_at,
+              T.updated_at,
+              T.additionals,
+              T.id_company AS company_id,
+              UPPER(JSON_VALUE(T.additionals, '$.reason')) AS reason,
+              UPPER(JSON_VALUE(T.additionals, '$.reception_type')) AS reception_type,
+              UPPER(JSON_VALUE(T.additionals, '$.Unit.basic_unit_cd')) AS basic_unit_cd,
+              UPPER(JSON_VALUE(T.additionals, '$.unit.desc')) AS unit_desc,
+              UPPER(JSON_VALUE(T.additionals, '$.patient_name')) AS patient_name,
+              UPPER(JSON_VALUE(T.additionals, '$.entryReason.label')) AS entry_reason
+            FROM np_api_tickets.tickets T
+            LEFT JOIN np_api_tickets.ticketstatuses TS ON TS.ticket_status_id = T.ticket_status_id
+            LEFT JOIN np_api_tickets.ticketconfigs TC ON TC.ticket_config_id = T.ticket_config_id
+            LEFT JOIN np_api_tickets.tickettypes TT ON TT.ticket_type_id = TC.ticket_type_id
+            LEFT JOIN np_api_tickets.checklists CL ON CL.checklist_id = TC.checklist_id
+            WHERE T.updated_at >= COALESCE(
+                  (SELECT DT.reference_date FROM benthos.datatracker DT WHERE DT.source = 'enriched_tickets'),
+                  '2000-01-01 00:00:00'
+              )
+            ORDER BY T.updated_at ASC
+            LIMIT 100000;
+    batching:
+      count: 10000
+      period: 20s
+
+pipeline:
+  processors:
+  - label: processor_get_guest_information
+    branch:
+      request_map: root = this
+      result_map: |
+        root.guest_info = if this.length() > 0 {
+          {
+            "fullname": this.0.fullname,
+            "document": this.0.content,
+            "nationality": this.0.nationality,
+            "gender": this.0.gender,
+            "birth_date": if this.0.birth_date == "0000-00-00 00:00:00" { null } else { this.0.birth_date },
+            "creationDate": this.0.creationDate,
+            "created_by": this.0.created_by
+          }
+        } else {
+          {}
+        }
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_users?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              UPPER(U.fullname) AS fullname,
+              D.content,
+              U.nationality,
+              U.gender,
+              U.birth_date,
+              U.creationDate,
+              U.created_by
+            FROM users U
+            JOIN documents D ON D.id_document = U.id_document
+            WHERE U.id_user = ?;
+          args_mapping: '[ this.to ]'
+
+  - label: processor_get_host_information
+    branch:
+      request_map: root = this
+      result_map: |
+        root.host_info = if this.length() > 0 {
+          {
+            "fullname": this.0.fullname,
+            "document": this.0.content,
+            "nationality": this.0.nationality,
+            "gender": this.0.gender,
+            "birth_date": if this.0.birth_date == "0000-00-00 00:00:00" { null } else { this.0.birth_date },
+            "creationDate": this.0.creationDate,
+            "created_by": this.0.created_by
+          }
+        } else {
+          {}
+        }
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_users?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              UPPER(U.fullname) AS fullname,
+              D.content,
+              U.nationality,
+              U.gender,
+              U.birth_date,
+              U.creationDate,
+              U.created_by
+            FROM users U
+            JOIN documents D ON D.id_document = U.id_document
+            WHERE U.id_user = ?;
+          args_mapping: '[ this.from ]'
+
+  - label: processor_get_headquarter_information
+    branch:
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 && this.0.id_headquarters != NULL {
+          root.headquarters_id = this.0.id_headquarters
+        } else {
+          root.headquarters_id = NULL
+        }
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              c.id_headquarters
+            FROM shared_api_contracts.companies c
+            WHERE c.id_company = ?;
+          args_mapping: '[ this.company_id ]'
+
+  - label: processor_set_entry_and_departure_time
+    bloblang: |
+      root = this
+      root.entry_time = this.created_at
+      root.departure_time = if this.ticket_status_name == "finished" {
+        this.updated_at
+      } else {
+        null
+      }
+
+  - label: processor_fetch_patient_info
+    switch:
+    - check: this.subject != NULL
+      processors:
+        - branch:
+            result_map: 'root.patient_tasy = this'
+            processors:
+            - sql_raw:
+                driver: mysql
+                conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_integrador_tasy?${INPUT_CONNOPTS}
+                query: |
+                  SELECT
+                    P.patient_name as name,
+                    P.cpf,
+                    P.passport
+                  FROM np_integrador_tasy.patients P
+                  WHERE P.patient_id = ?
+                args_mapping: '[ this.subject ]'
+  
+  - label: processor_set_patient_info
+    switch:
+    - check: this.patient_tasy != NULL && this.patient_tasy.length() > 0
+      processors:
+      - bloblang: |
+          root = this
+          this.patient = {}
+          root.patient.name = if this.patient_tasy.0.name != NULL {
+            this.patient_tasy.0.name
+          } else if this.patient_name != NULL {
+            this.patient_name
+          } else {
+            NULL
+          }
+          root.patient.document = if this.patient_tasy.0.cpf != NULL {
+            this.patient_tasy.0.cpf
+          } else if this.patient_tasy.0.passport != NULL {
+            this.patient_tasy.0.passport
+          } else {
+            NULL
+          }
+    - processors:
+      - bloblang: |
+          root = this
+          root.patient = {}
+          root.patient.name = if this.patient_name != NULL {
+            this.patient_name
+          } else {
+            NULL
+          }
+          root.patient.document = NULL
+
+  - label: processor_set_bed
+    bloblang: |
+      root = this
+      root.bed = if this.basic_unit_cd != NULL {
+        this.basic_unit_cd
+      } else {
+        this.unit_desc
+      }
+
+  - label: debug_log
+    log:
+      level: DEBUG
+      message: "REF=${! this.updated_at }"
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output_saving_enriched_data
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS `enrichedtickets` (
+            `ticket_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `ticket_status_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `ticket_status_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `ticket_config_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `ticket_type_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `ticket_type_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `ticket_type_description` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `checklist_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `checklist_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `checklist_content` json DEFAULT NULL,
+            `badge` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `from_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `from_fullname` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `from_document` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `from_nationality` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `from_gender` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `from_birth_date` date DEFAULT NULL,
+            `from_created_at` date DEFAULT NULL,
+            `from_created_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `to_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `to_fullname` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `to_document` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `to_nationality` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `to_gender` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `to_birth_date` date DEFAULT NULL,
+            `to_created_at` date DEFAULT NULL,
+            `to_created_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `subject` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `place_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `start_datetime` datetime DEFAULT NULL,
+            `end_datetime` datetime DEFAULT NULL,
+            `created_at` datetime DEFAULT NULL,
+            `updated_at` datetime DEFAULT NULL,
+            `additionals` json DEFAULT NULL,
+            `entry_time` datetime NOT NULL,
+            `departure_time` datetime DEFAULT NULL,
+            `reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `company_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `headquarters_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `patient_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `patient_document` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `basic_unit_cd` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `entry_reason` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            PRIMARY KEY (`ticket_id`),
+            KEY `idx_enriched_tickets_created_at` (`created_at`),
+            KEY `idx_enriched_tickets_created_at_company_id_basic_unit_cd` (`basic_unit_cd`,`created_at`,`company_id`),
+            KEY `idx_company_created_reason` (`company_id`,`created_at`,`reason`),
+            KEY `idx_enriched_tickets_company_id_patient_document_created_at` (`company_id`,`created_at`,`patient_document`),
+            KEY `idx_enriched_tickets_patient_document` (`patient_document`),
+            KEY `idx_entry_reason_company_id_create_at` (`entry_reason`,`company_id`,`created_at`),
+            KEY `idx_patient_name_company_id` (`patient_name`,`company_id`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        query: |
+          INSERT INTO enrichedtickets (
+            ticket_id,
+            ticket_status_id,
+            ticket_status_name,
+            ticket_config_id,
+            ticket_type_id,
+            ticket_type_name,
+            ticket_type_description,
+            checklist_id,
+            checklist_name,
+            checklist_content,
+            badge,
+            from_id,
+            from_fullname,
+            from_document,
+            from_nationality,
+            from_gender,
+            from_birth_date,
+            from_created_at,
+            from_created_by,
+            to_id,
+            to_fullname,
+            to_document,
+            to_nationality,
+            to_gender,
+            to_birth_date,
+            to_created_at,
+            to_created_by,
+            subject,
+            place_id,
+            start_datetime,
+            end_datetime,
+            created_at,
+            updated_at,
+            additionals,
+            entry_time,
+            departure_time,
+            reason,
+            company_id,
+            headquarters_id,
+            patient_name,
+            patient_document,
+            basic_unit_cd,
+            entry_reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            ticket_status_id        = COALESCE(VALUES(ticket_status_id), ticket_status_id),
+            ticket_status_name      = COALESCE(VALUES(ticket_status_name), ticket_status_name),
+            ticket_config_id        = COALESCE(VALUES(ticket_config_id), ticket_config_id),
+            ticket_type_id          = COALESCE(VALUES(ticket_type_id), ticket_type_id),
+            ticket_type_name        = COALESCE(VALUES(ticket_type_name), ticket_type_name),
+            ticket_type_description = COALESCE(VALUES(ticket_type_description), ticket_type_description),
+            checklist_id            = COALESCE(VALUES(checklist_id), checklist_id),
+            checklist_name          = COALESCE(VALUES(checklist_name), checklist_name),
+            checklist_content       = COALESCE(VALUES(checklist_content), checklist_content),
+            badge                   = COALESCE(VALUES(badge), badge),
+            from_id                 = COALESCE(VALUES(from_id), from_id),
+            from_fullname           = COALESCE(VALUES(from_fullname), from_fullname),
+            from_document           = COALESCE(VALUES(from_document), from_document),
+            from_nationality        = COALESCE(VALUES(from_nationality), from_nationality),
+            from_gender             = COALESCE(VALUES(from_gender), from_gender),
+            from_birth_date         = COALESCE(VALUES(from_birth_date), from_birth_date),
+            from_created_at         = COALESCE(VALUES(from_created_at), from_created_at),
+            from_created_by         = COALESCE(VALUES(from_created_by), from_created_by),
+            to_id                   = COALESCE(VALUES(to_id), to_id),
+            to_fullname             = COALESCE(VALUES(to_fullname), to_fullname),
+            to_document             = COALESCE(VALUES(to_document), to_document),
+            to_nationality          = COALESCE(VALUES(to_nationality), to_nationality),
+            to_gender               = COALESCE(VALUES(to_gender), to_gender),
+            to_birth_date           = COALESCE(VALUES(to_birth_date), to_birth_date),
+            to_created_at           = COALESCE(VALUES(to_created_at), to_created_at),
+            to_created_by           = COALESCE(VALUES(to_created_by), to_created_by),
+            subject                 = COALESCE(VALUES(subject), subject),
+            place_id                = COALESCE(VALUES(place_id), place_id),
+            start_datetime          = COALESCE(VALUES(start_datetime), start_datetime),
+            end_datetime            = COALESCE(VALUES(end_datetime), end_datetime),
+            created_at              = COALESCE(VALUES(created_at), created_at),
+            updated_at              = COALESCE(VALUES(updated_at), updated_at),
+            additionals             = COALESCE(VALUES(additionals), additionals),
+            entry_time              = COALESCE(VALUES(entry_time), entry_time),
+            departure_time          = COALESCE(VALUES(departure_time), departure_time),
+            reason                  = COALESCE(VALUES(reason), reason),
+            company_id              = COALESCE(VALUES(company_id), company_id),
+            headquarters_id         = COALESCE(VALUES(headquarters_id), headquarters_id),
+            patient_name            = COALESCE(VALUES(patient_name), patient_name),
+            patient_document        = COALESCE(VALUES(patient_document), patient_document),
+            basic_unit_cd           = COALESCE(VALUES(basic_unit_cd), basic_unit_cd),
+            entry_reason            = COALESCE(VALUES(entry_reason), entry_reason);
+        args_mapping: |
+          root = [
+            this.ticket_id,
+            this.ticket_status_id,
+            this.ticket_status_name,
+            this.ticket_config_id,
+            this.ticket_type_id,
+            this.ticket_type_name,
+            this.ticket_type_description,
+            this.checklist_id,
+            this.checklist_name,
+            this.checklist_content,
+            this.badge,
+            this.from,
+            this.host_info.fullname,
+            this.host_info.document,
+            this.host_info.nationality,
+            this.host_info.gender,
+            this.host_info.birth_date,
+            this.host_info.creationDate,
+            this.host_info.created_by,
+            this.to,
+            this.guest_info.fullname,
+            this.guest_info.document,
+            this.guest_info.nationality,
+            this.guest_info.gender,
+            this.guest_info.birth_date,
+            this.guest_info.creationDate,
+            this.guest_info.created_by,
+            this.subject,
+            this.place_id,
+            this.start_datetime,
+            this.end_datetime,
+            this.created_at,
+            this.updated_at,
+            this.additionals,
+            this.entry_time,
+            this.departure_time,
+            this.reason,
+            this.company_id,
+            this.headquarters_id,
+            this.patient.name,
+            this.patient.document,
+            this.bed,
+            this.entry_reason
+          ]
+
+    - label: output_saving_visits_report
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS visitsreport (
+            ticket_id               CHAR(36)      NOT NULL  PRIMARY KEY,
+            badge                   VARCHAR(255),
+            from_fullname           VARCHAR(255),
+            to_id                   CHAR(36)      NOT NULL,
+            to_fullname             VARCHAR(255),
+            to_document             VARCHAR(255),
+            subject                 VARCHAR(255),
+            patient_name            VARCHAR(255),
+            reason                  VARCHAR(255),
+            reception_type          VARCHAR(255),
+            bed                     VARCHAR(255),
+            entry_time              DATETIME      NOT NULL,
+            departure_time          DATETIME,
+            company_id              CHAR(36)      NOT NULL,
+            headquarters_id         CHAR(36),
+            entry_reason            VARCHAR(100)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+        query: |
+          INSERT INTO visitsreport (
+            ticket_id,
+            badge,
+            from_fullname,
+            to_id,
+            to_fullname,
+            to_document,
+            subject,
+            patient_name,
+            reason,
+            reception_type,
+            bed,
+            entry_time,
+            departure_time,
+            company_id,
+            headquarters_id,
+            entry_reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            badge             = COALESCE(VALUES(badge), badge),
+            from_fullname     = COALESCE(VALUES(from_fullname), from_fullname),
+            to_id             = COALESCE(VALUES(to_id), to_id),
+            to_fullname       = COALESCE(VALUES(to_fullname), to_fullname),
+            to_document       = COALESCE(VALUES(to_document), to_document),
+            subject           = COALESCE(VALUES(subject), subject),
+            patient_name      = COALESCE(VALUES(patient_name), patient_name),
+            reason            = COALESCE(VALUES(reason), reason),
+            reception_type    = COALESCE(VALUES(reception_type), reception_type),
+            bed               = COALESCE(VALUES(bed), bed),
+            entry_time        = COALESCE(VALUES(entry_time), entry_time),
+            departure_time    = COALESCE(VALUES(departure_time), departure_time),
+            company_id        = COALESCE(VALUES(company_id), company_id),
+            headquarters_id   = COALESCE(VALUES(headquarters_id), headquarters_id),
+            entry_reason      = COALESCE(VALUES(entry_reason), entry_reason)
+        args_mapping: |
+          root = [
+            this.ticket_id,
+            this.badge,
+            this.host_info.fullname,
+            this.to,
+            this.guest_info.fullname,
+            this.guest_info.document,
+            this.subject,
+            this.patient_name,
+            this.reason,
+            this.reception_type,
+            this.bed,
+            this.entry_time,
+            this.departure_time,
+            this.company_id,
+            this.headquarters_id,
+            this.entry_reason
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${MAIN_USERNAME}:${MAIN_PASSWORD}@tcp(${MAIN_CONNHOST}:${MAIN_CONNPORT})/benthos?${MAIN_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('enriched_tickets', ?)
+          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+        args_mapping: root = [ this.updated_at ]

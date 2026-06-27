@@ -1,0 +1,6 @@
+apiVersion: v2
+name: data-etl-benthos
+description: Bento ETL pipelines scheduled as CronWorkflows
+type: application
+version: 0.1.0
+appVersion: "1.18.1"

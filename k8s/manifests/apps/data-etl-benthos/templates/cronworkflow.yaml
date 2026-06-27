@@ -1,0 +1,55 @@
+{{- $d := .Values.defaults -}}
+{{- range .Values.pipelines }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: {{ .name }}
+  labels:
+    app.kubernetes.io/name: data-etl-benthos
+    app.kubernetes.io/component: {{ .name }}
+spec:
+  schedules:
+    - {{ .schedule | default $d.schedule | quote }}
+  concurrencyPolicy: {{ $d.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ $d.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $d.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $d.failedJobsHistoryLimit }}
+  # Labels copied onto every Workflow object so they're filterable in the Argo UI.
+  workflowMetadata:
+    labels:
+      app.kubernetes.io/name: data-etl-benthos
+      app.kubernetes.io/component: {{ .name }}
+  workflowSpec:
+    serviceAccountName: {{ $.Values.workflow.serviceAccountName }}
+    nodeSelector:
+      {{- toYaml $.Values.nodeSelector | nindent 6 }}
+    entrypoint: run
+    activeDeadlineSeconds: {{ $d.activeDeadlineSeconds }}
+    # Keep failed pods around for debugging; reap them once the run succeeds.
+    podGC:
+      strategy: OnWorkflowSuccess
+    volumes:
+      - name: pipelines
+        configMap:
+          name: data-etl-benthos-pipelines
+    templates:
+      - name: run
+        retryStrategy:
+          limit: {{ $d.backoffLimit }}
+          retryPolicy: OnFailure
+        container:
+          image: {{ $.Values.image }}
+          args:
+            - "-c"
+            - "/etc/pipelines/{{ .file }}"
+          envFrom:
+            - secretRef:
+                name: data-etl-benthos
+          volumeMounts:
+            - name: pipelines
+              mountPath: /etc/pipelines
+              readOnly: true
+          resources:
+            {{- toYaml $d.resources | nindent 12 }}
+{{- end }}

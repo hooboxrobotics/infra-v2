@@ -1,0 +1,35 @@
+# The argo-workflows chart only provisions the workflow ServiceAccount/RBAC in
+# its own namespace (argo). Our CronWorkflows run in apps-data-etl, so we create
+# the SA here. The emissary executor reports step results back to the controller
+# via workflowtaskresults — without these verbs the pods fail at startup.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.workflow.serviceAccountName }}
+  labels:
+    app.kubernetes.io/name: data-etl-benthos
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.workflow.serviceAccountName }}
+  labels:
+    app.kubernetes.io/name: data-etl-benthos
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.workflow.serviceAccountName }}
+  labels:
+    app.kubernetes.io/name: data-etl-benthos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.workflow.serviceAccountName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.workflow.serviceAccountName }}

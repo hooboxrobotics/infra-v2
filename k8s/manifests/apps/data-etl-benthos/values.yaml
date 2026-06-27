@@ -1,0 +1,72 @@
+image: ghcr.io/warpstreamlabs/bento:1.18.1
+
+# ServiceAccount used by the workflow pods (created in templates/rbac.yaml).
+workflow:
+  serviceAccountName: data-etl-benthos-workflow
+
+# Nodes the workflow pods are pinned to.
+nodeSelector:
+  workload: workers
+
+# Defaults applied to every CronWorkflow unless overridden per pipeline.
+defaults:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  backoffLimit: 1
+  activeDeadlineSeconds: 540
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Each entry generates one CronJob.
+#   name:     metadata.name and the app.kubernetes.io/component label
+#   file:     pipeline config under pipelines/, mounted at /etc/pipelines
+#   schedule: optional, falls back to defaults.schedule when omitted
+pipelines:
+  - name: enriched-operations
+    file: enriched_operations.yaml
+  - name: enriched-operations-adds
+    file: enriched_operations_additions.yaml
+    schedule: "8,18,28,38,48,58 * * * *"
+  - name: enriched-operations-checker
+    file: enriched_operations_checker.yaml
+    schedule: "*/5 * * * *"
+  - name: enriched-preop
+    file: enriched_pre_op.yaml
+  - name: enriched-tickets
+    file: enriched_tickets.yaml
+  - name: enriched-trr
+    file: enriched_trr.yaml
+    schedule: "*/1 * * * *"
+  - name: expired-finished-tickets
+    file: expired_and_finished_tickets.yaml
+  - name: meal-orders
+    file: meal_orders.yaml
+  - name: ratings
+    file: ratings.yaml
+  - name: requests
+    file: requests.yaml
+  - name: tickets-by-block
+    file: tickets_by_block.yaml
+  - name: tickets-by-issuer
+    file: tickets_by_issuer.yaml
+  - name: tickets-by-reason
+    file: tickets_by_reason.yaml
+  - name: tickets-entrances
+    file: tickets_entrances.yaml
+  - name: tickets-exits
+    file: tickets_exits.yaml
+  - name: tickets-per-hour
+    file: tickets_per_hour.yaml
+  - name: transports-requests
+    file: transports_requests.yaml
+    schedule: "*/2 * * * *"
+  - name: users-by-issuer
+    file: users_by_issuer.yaml

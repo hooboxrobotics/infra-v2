@@ -1,0 +1,13 @@
+# Mirrors the /etc/pipelines path the benthos CronJobs mount. Built from every
+# file under pipelines/ so adding a pipeline is just dropping a file + a values
+# entry. The name is stable (no hash); pods are recreated each tick and pick up
+# the new revision on the next run.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-etl-benthos-pipelines
+data:
+{{- range $path, $_ := .Files.Glob "pipelines/*.yaml" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
