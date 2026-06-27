@@ -38,6 +38,7 @@ workflow:
 controller:
   workflowNamespaces:
     - argo
+    - apps-data-etl
   nodeSelector:
     workload: infra
   resources:
