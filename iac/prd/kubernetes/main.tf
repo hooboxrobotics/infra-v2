@@ -47,6 +47,23 @@ module "eks" {
 
       subnet_ids = data.aws_subnets.eks_common_nodes.ids
     }
+
+    workers = {
+      name = "workers"
+      labels = {
+        workload = "workers"
+      }
+
+      ami_type       = "AL2023_ARM_64_STANDARD"
+      instance_types = ["t4g.large"]
+      capacity_type  = "ON_DEMAND"
+
+      min_size     = 1
+      max_size     = 5
+      desired_size = 1
+
+      subnet_ids = data.aws_subnets.eks_common_nodes.ids
+    }
   }
 
   access_entries = {
