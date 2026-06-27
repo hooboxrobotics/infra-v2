@@ -24,6 +24,8 @@ spec:
     serviceAccountName: {{ $.Values.workflow.serviceAccountName }}
     nodeSelector:
       {{- toYaml $.Values.nodeSelector | nindent 6 }}
+    tolerations:
+      {{- toYaml $.Values.tolerations | nindent 6 }}
     entrypoint: run
     activeDeadlineSeconds: {{ $d.activeDeadlineSeconds }}
     # Keep failed pods around for debugging; reap them once the run succeeds.

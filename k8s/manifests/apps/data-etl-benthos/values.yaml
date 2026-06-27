@@ -8,6 +8,12 @@ workflow:
 nodeSelector:
   workload: workers
 
+tolerations:
+  - key: workload
+    operator: Equal
+    value: workers
+    effect: NoSchedule
+
 # Defaults applied to every CronWorkflow unless overridden per pipeline.
 defaults:
   schedule: "*/10 * * * *"

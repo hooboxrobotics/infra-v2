@@ -54,6 +54,19 @@ module "eks" {
         workload = "workers"
       }
 
+      # This Node Group is reserved only for background workers, like cronjobs,
+      # queue consumers, and etc.
+      #
+      # To run here, a Pod must select workload=workers AND tolerate the matching
+      # taint to run here.
+      taints = {
+        workload = {
+          key    = "workload"
+          value  = "workers"
+          effect = "NO_SCHEDULE"
+        }
+      }
+
       ami_type       = "AL2023_ARM_64_STANDARD"
       instance_types = ["t4g.large"]
       capacity_type  = "ON_DEMAND"
