@@ -22,7 +22,7 @@ defaults:
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   backoffLimit: 1
-  activeDeadlineSeconds: 540
+  activeDeadlineSeconds: 3600
   resources:
     requests:
       cpu: 50m
