@@ -73,7 +73,7 @@ module "eks" {
 
       min_size     = 1
       max_size     = 5
-      desired_size = 1
+      desired_size = 2
 
       subnet_ids = data.aws_subnets.eks_common_nodes.ids
     }
