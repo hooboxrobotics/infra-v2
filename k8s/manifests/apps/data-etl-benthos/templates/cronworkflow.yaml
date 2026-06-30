@@ -28,9 +28,6 @@ spec:
       {{- toYaml $.Values.tolerations | nindent 6 }}
     entrypoint: run
     activeDeadlineSeconds: {{ $d.activeDeadlineSeconds }}
-    # Keep failed pods around for debugging; reap them once the run succeeds.
-    podGC:
-      strategy: OnWorkflowSuccess
     volumes:
       - name: pipelines
         configMap:

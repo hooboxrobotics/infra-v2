@@ -19,7 +19,7 @@ defaults:
   schedule: "*/10 * * * *"
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 120
-  successfulJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 3
   backoffLimit: 1
   activeDeadlineSeconds: 3600
