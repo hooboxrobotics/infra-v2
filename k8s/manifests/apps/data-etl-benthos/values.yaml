@@ -28,8 +28,8 @@ defaults:
       cpu: 50m
       memory: 64Mi
     limits:
-      cpu: 500m
-      memory: 256Mi
+      cpu: 1000m
+      memory: 2Gi
 
 # Each entry generates one CronJob.
 #   name:     metadata.name and the app.kubernetes.io/component label
