@@ -1,0 +1,29 @@
+args:
+  - --cert-dir=/tmp
+  - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+  - --kubelet-insecure-tls
+  - --metric-resolution=15s
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 200Mi
+  limits:
+    cpu: 100m
+    memory: 200Mi
+
+nodeSelector:
+  workload: infra
+
+securityContext:
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+livenessProbe:
+  initialDelaySeconds: 0
+  periodSeconds: 10
+
+readinessProbe:
+  initialDelaySeconds: 20
+  periodSeconds: 10

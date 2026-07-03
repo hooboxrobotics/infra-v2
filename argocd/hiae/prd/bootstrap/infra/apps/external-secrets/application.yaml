@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-secrets
+  namespace: argocd
+  annotations:
+    # CRDs and operator available before any ExternalSecret/ClusterSecretStore is reconciled
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infra
+  sources:
+    - repoURL: https://charts.external-secrets.io
+      chart: external-secrets
+      targetRevision: 2.6.0
+      helm:
+        valueFiles:
+          - $values/argocd/hiae/prd/bootstrap/infra/apps/external-secrets/values.yaml
+    - repoURL: https://github.com/hooboxrobotics/infra-v2.git
+      targetRevision: main
+      ref: values
+    - repoURL: https://github.com/hooboxrobotics/infra-v2.git
+      targetRevision: main
+      path: argocd/hiae/prd/manifests/infra/external-secrets
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-secrets
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

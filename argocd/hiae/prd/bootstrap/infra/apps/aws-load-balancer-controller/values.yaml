@@ -1,0 +1,21 @@
+clusterName: hbx-prd
+region: sa-east-1
+# Explicito para nao depender do IMDS (hop limit dos nos bloqueia auto-discovery).
+vpcId: vpc-0f606b0adf0e08852
+
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+
+replicaCount: 1
+
+nodeSelector:
+  workload: infra
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
