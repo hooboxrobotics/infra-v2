@@ -1,5 +1,5 @@
 logger:
-  level: ALL
+  level: DEBUG
 
 http:
   enabled: true
@@ -29,7 +29,16 @@ input:
                 pr.gratuito,
                 pr.id AS id_pedido_refeicao,
                 rf.valor_centavos,
-                jt.answer AS delivery_place
+                jt.answer AS delivery_place,
+                pg.tipo_pagamento AS payment_method,
+                pg.status AS payment_status,
+                pg.bandeira_cartao AS brand,
+                pg.id_transacao AS cv,
+                c.nome AS name,
+                c.numero_documento AS document,
+                p.delivery_date,
+                s.name AS order_status,
+                os.created_at AS modified_at
               FROM shared_api_payments.pedidos p
               JOIN shared_api_payments.pedidorefeicoes pr 
                 ON pr.id_pedido = p.id  
@@ -39,6 +48,12 @@ input:
                 ON o.order_id = p.id
               JOIN shared_api_reports.orderstatuses os
                 ON os.order_id = o.order_id
+              JOIN shared_api_reports.statuses s
+                ON s.status_id = os.status_id 
+              JOIN shared_api_payments.pagamentos pg
+                ON pg.id_pedido = p.id
+              JOIN shared_api_payments.clientes c
+                ON c.hash_documento = p.documento
               JOIN BenthosReference br
               LEFT JOIN JSON_TABLE(
                 o.content,
@@ -56,11 +71,21 @@ input:
               created_at,
               descricao,
               delivery_place,
+              payment_method,
+              payment_status,
+              brand,
+              cv,
+              name,
+              document,
+              delivery_date,
+              order_status,
+              modified_at,
               CASE 
                 WHEN gratuito = 0 THEN valor_centavos 
                 ELSE 0
               END AS total_centavos
-            FROM PedidosPayments;
+            FROM PedidosPayments
+            ORDER BY created_at ASC;
     batching:
       count: 10000
       period: 20s
@@ -73,103 +98,17 @@ pipeline:
       root.meal_order_id = "%s%s%s".format(this.id_pedido_refeicao, this.descricao, this.total_centavos)
       root.meal_order_id = root.meal_order_id.hash("md5").encode("hex")
 
-  - label: processor_get_client_information
-    branch:
-      request_map: root = this
-      result_map: |
-        if this.length() > 0 {
-          root.name = this.0.nome
-          root.document = this.0.numero_documento
-          root.delivery_date = this.0.delivery_date
-        } else {
-          root.name = NULL
-          root.document = NULL
-          root.delivery_date = NULL
-        }
-      processors:
-      - sql_raw:
-          driver: mysql
-          conn_max_open: ${MAX_OPEN_CONNECTIONS}
-          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_payments?${INPUT_CONNOPTS}
-          query: |
-            SELECT
-              c.nome,
-              c.numero_documento,
-              p.delivery_date
-            FROM shared_api_payments.pedidos p
-            JOIN shared_api_payments.clientes c
-              ON c.hash_documento = p.documento
-            WHERE p.id = ?;
-          args_mapping: '[ this.id_pedido ]'
-    
-  - label: processor_get_payment_information
-    branch:
-      request_map: root = this
-      result_map: |
-        if this.length() > 0 {
-          root.payment_method = this.0.tipo_pagamento
-          root.payment_status = this.0.status
-        } else {
-          root.payment_method = NULL
-          root.payment_status = NULL
-        }
-      processors:
-      - sql_raw:
-          driver: mysql
-          conn_max_open: ${MAX_OPEN_CONNECTIONS}
-          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_payments?${INPUT_CONNOPTS}
-          query: |
-            SELECT
-              p.tipo_pagamento,
-              p.status
-            FROM shared_api_payments.pagamentos p
-            WHERE p.id_pedido = ?;
-          args_mapping: '[ this.id_pedido ]'
-
-  - label: processor_get_order_status
-    branch:
-      request_map: root = this
-      result_map: |
-        if this.length() > 0 {
-          root.order_status = this.0.name
-          root.modified_at = this.0.created_at
-        } else {
-          root.order_staus = NULL
-          root.modified_at = NULL
-        }
-      processors:
-      - sql_raw:
-          driver: mysql
-          conn_max_open: ${MAX_OPEN_CONNECTIONS}
-          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_payments?${INPUT_CONNOPTS}
-          query: |
-            SELECT
-              s.name,
-              os.created_at
-            FROM shared_api_reports.orders o
-            JOIN shared_api_reports.orderstatuses os
-              ON os.order_status_id = o.order_status_id
-            JOIN shared_api_reports.statuses s
-              ON s.status_id = os.status_id
-            WHERE o.order_id = ?;
-          args_mapping: '[ this.id_pedido ]'
-
   - label: processor_check_value
     bloblang: |
       root = this
-      if this.total_centavos == "0" {
+      if this.total_centavos == 0 {
         root.payment_method = "SUBSÍDIO"
       }
 
-  - label: processor_log_prod
-    switch:
-      - check: 1 == 1
-        processors:
-          - log:
-              level: WARN
-              fields_mapping: |
-                root.total_centavos = this.total_centavos
-                root.metodo = this.payment_method
+  - label: debug_log
+    log:
+      level: DEBUG
+      message: "CURRENT=${! this.created_at }"
 
 output:
   broker:
@@ -191,12 +130,44 @@ output:
             value                   INTEGER UNSIGNED,
             delivery_date           DATETIME,
             payment_method          VARCHAR(255),
+            brand                   VARCHAR(255),
+            cv                      VARCHAR(255),
             payment_status          VARCHAR(255),
             order_status            VARCHAR(50),
             modified_at             DATETIME
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
         query:
-          REPLACE INTO mealorders VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          INSERT INTO mealorders (
+            meal_order_id,
+            order_id,
+            delivery_place,
+            name,
+            document,
+            item,
+            value,
+            delivery_date,
+            payment_method,
+            brand,
+            cv,
+            payment_status,
+            order_status,
+            modified_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            order_id = VALUES(order_id),
+            delivery_place = VALUES(delivery_place),
+            name = VALUES(name),
+            document = VALUES(document),
+            item = VALUES(item),
+            value = VALUES(value),
+            delivery_date = VALUES(delivery_date),
+            payment_method = VALUES(payment_method),
+            brand = VALUES(brand),
+            cv = VALUES(cv),
+            payment_status = VALUES(payment_status),
+            order_status = VALUES(order_status),
+            modified_at = VALUES(modified_at);
         args_mapping: |
           root = [
             this.meal_order_id,
@@ -208,6 +179,8 @@ output:
             this.total_centavos,
             this.delivery_date,
             this.payment_method,
+            this.brand,
+            this.cv,
             this.payment_status,
             this.order_status,
             this.modified_at
