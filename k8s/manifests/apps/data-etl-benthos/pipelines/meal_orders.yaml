@@ -101,7 +101,7 @@ pipeline:
   - label: processor_check_value
     bloblang: |
       root = this
-      if this.total_centavos == 0 {
+      if this.total_centavos == "0" {
         root.payment_method = "SUBSÍDIO"
       }
 
