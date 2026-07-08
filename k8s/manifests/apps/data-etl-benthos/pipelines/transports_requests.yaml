@@ -61,7 +61,8 @@ input:
               OS.order_status_id,
               OS.status_id,
               OS.created_at AS status_created_at,
-              OS.created_by
+              OS.created_by,
+              P.priority
             FROM shared_api_reports.transportorders T
             JOIN ImpactedOrders IO 
               ON IO.id_order = T.id_order
@@ -69,6 +70,8 @@ input:
               ON OTTO.id_order = T.id_order
             JOIN shared_api_reports.orderstatuses OS
               ON OS.order_id = T.id_order
+            LEFT JOIN shared_api_reports.priorities P
+              ON P.id_order = IO.id_order
             ORDER BY OS.created_at ASC;
     batching:
       count: 10000
@@ -212,22 +215,28 @@ output:
         driver: mysql
         dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
         init_statement: |
-          CREATE TABLE IF NOT EXISTS transportrequests (
-            etl_id            VARCHAR(36)   NOT NULL PRIMARY KEY,
-            order_id          VARCHAR(36)   NOT NULL,
-            created_at        DATETIME,
-            updated_at        DATETIME,
-            origin            VARCHAR(255),
-            destination       VARCHAR(255),
-            issuer_id         VARCHAR(36),
-            issuer            VARCHAR(255),
-            ordered_to_ids    JSON,
-            ordered_to        JSON,
-            status            VARCHAR(255),
-            status_date       DATETIME,
-            status_changed_by VARCHAR(255),
-            current_status    TINYINT(1)
-          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS `transportrequests` (
+            `etl_id` varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `order_id` varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            `created_at` datetime DEFAULT NULL,
+            `updated_at` datetime DEFAULT NULL,
+            `origin` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `destination` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `issuer_id` varchar(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `issuer` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `ordered_to_ids` json DEFAULT NULL,
+            `ordered_to` json DEFAULT NULL,
+            `status` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `status_date` datetime DEFAULT NULL,
+            `status_changed_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `current_status` tinyint(1) DEFAULT NULL,
+            `priority` int DEFAULT NULL,
+            PRIMARY KEY (`etl_id`),
+            KEY `idx_tr_order_updated` (`order_id`,`updated_at`),
+            KEY `idx_tr_updated` (`updated_at`),
+            KEY `idx_tr_order_status_date` (`order_id`,`status_date`),
+            KEY `idx_tr_current_status_order_id` (`current_status`,`status`,`order_id`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         query: |
           INSERT INTO transportrequests (
             etl_id,
@@ -243,8 +252,9 @@ output:
             status,
             status_date,
             status_changed_by,
-            current_status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            current_status,
+            priority
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE
             created_at = COALESCE(VALUES(created_at), created_at),
             updated_at = COALESCE(VALUES(updated_at), updated_at),
@@ -257,7 +267,8 @@ output:
             status = COALESCE(VALUES(status), status),
             status_date = COALESCE(VALUES(status_date), status_date),
             status_changed_by = COALESCE(VALUES(status_changed_by), status_changed_by),
-            current_status = COALESCE(VALUES(current_status), current_status);
+            current_status = COALESCE(VALUES(current_status), current_status),
+            priority = COALESCE(VALUES(priority), priority);
         args_mapping: |
           root = [
             this.etl_id,
@@ -273,7 +284,8 @@ output:
             this.status,
             this.status_created_at,
             this.status_changed_by,
-            this.current_status
+            this.current_status,
+            this.priority
           ]
 
     - label: output_set_reference_date
