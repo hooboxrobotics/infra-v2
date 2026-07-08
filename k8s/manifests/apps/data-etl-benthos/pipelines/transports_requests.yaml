@@ -9,25 +9,25 @@ input:
           driver: mysql
           dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_reports?${INPUT_CONNOPTS}
           query: |
-            WITH BenthosReference AS (
-              SELECT
-                COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00') AS reference_date
-              FROM benthos.datatracker D
-              WHERE D.source = 'transports_requests'
-            ),
-            UpdatedTransportOrders AS (
+            WITH UpdatedTransportOrders AS (
               SELECT T.id_order
               FROM shared_api_reports.transportorders T
-              JOIN BenthosReference BR
-              WHERE T.updated_at >= BR.reference_date
+              WHERE T.updated_at >= (
+                SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
+                FROM benthos.datatracker d
+                WHERE d.source = 'transports_requests'
+              )
             ),
             UpdatedByStatus AS (
               SELECT DISTINCT OS.order_id
               FROM shared_api_reports.orderstatuses OS
-              JOIN shared_api_reports.transportorders T 
+              STRAIGHT_JOIN shared_api_reports.transportorders T
                 ON T.id_order = OS.order_id
-              JOIN BenthosReference BR
-              WHERE OS.created_at >= BR.reference_date
+              WHERE OS.created_at >= (
+                SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
+                FROM benthos.datatracker d
+                WHERE d.source = 'transports_requests'
+              )
             ),
             ImpactedOrders AS (
               SELECT id_order FROM UpdatedTransportOrders
