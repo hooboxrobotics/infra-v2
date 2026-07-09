@@ -85,7 +85,7 @@ input:
                 ELSE 0
               END AS total_centavos
             FROM PedidosPayments
-            ORDER BY created_at ASC;
+            ORDER BY modified_at ASC;
     batching:
       count: 10000
       period: 20s
@@ -108,7 +108,7 @@ pipeline:
   - label: debug_log
     log:
       level: DEBUG
-      message: "CURRENT=${! this.created_at }"
+      message: "CURRENT=${! this.modified_at }"
 
 output:
   broker:
@@ -120,22 +120,24 @@ output:
         conn_max_open: ${MAX_OPEN_CONNECTIONS}
         dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
         init_statement: |
-          CREATE TABLE IF NOT EXISTS mealorders (
-            meal_order_id           VARCHAR(36)   NOT NULL PRIMARY KEY,
-            order_id                VARCHAR(36)   NOT NULL,
-            delivery_place          VARCHAR(255),
-            name                    TEXT,
-            document                VARCHAR(50),
-            item                    TEXT,
-            value                   INTEGER UNSIGNED,
-            delivery_date           DATETIME,
-            payment_method          VARCHAR(255),
-            brand                   VARCHAR(255),
-            cv                      VARCHAR(255),
-            payment_status          VARCHAR(255),
-            order_status            VARCHAR(50),
-            modified_at             DATETIME
-          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS `mealorders` (
+            meal_order_id varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            order_id varchar(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+            delivery_place varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            name text COLLATE utf8mb4_unicode_ci,
+            document varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            item text COLLATE utf8mb4_unicode_ci,
+            value int unsigned DEFAULT NULL,
+            created_at datetime DEFAULT NULL,
+            delivery_date datetime DEFAULT NULL,
+            payment_method varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            brand varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            cv varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            payment_status varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            order_status varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            modified_at datetime DEFAULT NULL,
+            PRIMARY KEY (`meal_order_id`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         query:
           INSERT INTO mealorders (
             meal_order_id,
@@ -145,6 +147,7 @@ output:
             document,
             item,
             value,
+            created_at,
             delivery_date,
             payment_method,
             brand,
@@ -153,7 +156,7 @@ output:
             order_status,
             modified_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE
             order_id = VALUES(order_id),
             delivery_place = VALUES(delivery_place),
@@ -161,6 +164,7 @@ output:
             document = VALUES(document),
             item = VALUES(item),
             value = VALUES(value),
+            created_at = VALUES(created_at),
             delivery_date = VALUES(delivery_date),
             payment_method = VALUES(payment_method),
             brand = VALUES(brand),
@@ -177,6 +181,7 @@ output:
             this.document,
             this.descricao,
             this.total_centavos,
+            this.created_at,
             this.delivery_date,
             this.payment_method,
             this.brand,
@@ -204,4 +209,4 @@ output:
           VALUES ('meal_orders', ?)
           ON DUPLICATE KEY UPDATE
             reference_date = IF(reference_date < VALUES(reference_date), VALUES(reference_date), reference_date);
-        args_mapping: root = [ this.created_at ]
+        args_mapping: root = [ this.modified_at ]
