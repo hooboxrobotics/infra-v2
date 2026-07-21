@@ -15,7 +15,7 @@ input:
               WHERE T.updated_at >= (
                 SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
                 FROM benthos.datatracker d
-                WHERE d.source = 'transports_requests'
+                WHERE d.source = 'transports_requests_'
               )
             ),
             UpdatedByStatus AS (
@@ -26,7 +26,7 @@ input:
               WHERE OS.created_at >= (
                 SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
                 FROM benthos.datatracker d
-                WHERE d.source = 'transports_requests'
+                WHERE d.source = 'transports_requests_'
               )
             ),
             ImpactedOrders AS (
@@ -302,6 +302,6 @@ output:
           );
         query: |
           INSERT INTO datatracker (source, reference_date)
-          VALUES ('transports_requests', ?)
+          VALUES ('transports_requests_', ?)
           ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
         args_mapping: root = [ this.status_created_at ]
