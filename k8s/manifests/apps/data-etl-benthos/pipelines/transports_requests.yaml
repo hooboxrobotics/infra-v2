@@ -93,18 +93,17 @@ pipeline:
       let parsedCreatedAts = this.ordered_to_created_at.or("[]").parse_json().catch([])
       let parsedDeletedAts = this.ordered_to_deleted_at.or("[]").parse_json().catch([])
       let statusTs = this.status_created_at.ts_parse("2006-01-02 15:04:05").ts_unix()
-      let firstFilter = $parsedIds.enumerated().map_each(element -> if $parsedCreatedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() <= $statusTs {
+      root.ordered_to_ids = $parsedIds.enumerated().map_each(element -> if $parsedCreatedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() <= $statusTs && ($parsedDeletedAts.index(element.index) == null || $parsedDeletedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() > $statusTs) {
           element.value
         } else {
           deleted()
         }
       )
-      root.ordered_to_ids = $firstFilter.enumerated().map_each(element -> if $parsedDeletedAts.index(element.index) == null || $parsedDeletedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() > $statusTs {
-          element.value
-        } else {
-          deleted()
-        }
-      )
+
+  - label: processor_deduplicate_ordered_to_ids
+    bloblang: |
+      root = this
+      root.ordered_to_ids = this.ordered_to_ids.or([]).unique()
 
   - label: processor_get_users_info
     branch:
