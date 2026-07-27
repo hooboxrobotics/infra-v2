@@ -15,7 +15,7 @@ input:
               WHERE T.updated_at >= (
                 SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
                 FROM benthos.datatracker d
-                WHERE d.source = 'transports_requests_1'
+                WHERE d.source = 'transports_requests'
               )
             ),
             UpdatedByStatus AS (
@@ -26,7 +26,7 @@ input:
               WHERE OS.created_at >= (
                 SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
                 FROM benthos.datatracker d
-                WHERE d.source = 'transports_requests_1'
+                WHERE d.source = 'transports_requests'
               )
             ),
             UpdatedTransporters AS (
@@ -38,12 +38,12 @@ input:
                 OTTO.created_at >= (
                   SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
                   FROM benthos.datatracker d
-                  WHERE d.source = 'transports_requests_1'
+                  WHERE d.source = 'transports_requests'
                 ) 
                 OR OTTO.deleted_at >= (
                   SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
                   FROM benthos.datatracker d
-                  WHERE d.source = 'transports_requests_1'
+                  WHERE d.source = 'transports_requests'
                 )
             ),
             ImpactedOrders AS (
@@ -78,6 +78,7 @@ input:
               OS.status_id,
               OS.created_at AS status_created_at,
               OS.created_by,
+              OS.reason AS status_change_reason,
               P.priority
             FROM shared_api_reports.transportorders T
             JOIN ImpactedOrders IO 
@@ -229,6 +230,7 @@ output:
             `status` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
             `status_date` datetime DEFAULT NULL,
             `status_changed_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `status_change_reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
             `current_status` tinyint(1) DEFAULT NULL,
             `priority` int DEFAULT NULL,
             PRIMARY KEY (`etl_id`),
@@ -252,9 +254,10 @@ output:
             status,
             status_date,
             status_changed_by,
+            status_change_reason,
             current_status,
             priority
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE
             created_at = COALESCE(VALUES(created_at), created_at),
             updated_at = COALESCE(VALUES(updated_at), updated_at),
@@ -267,6 +270,7 @@ output:
             status = COALESCE(VALUES(status), status),
             status_date = COALESCE(VALUES(status_date), status_date),
             status_changed_by = COALESCE(VALUES(status_changed_by), status_changed_by),
+            status_change_reason = COALESCE(VALUES(status_change_reason), status_change_reason),
             current_status = COALESCE(VALUES(current_status), current_status),
             priority = COALESCE(VALUES(priority), priority);
         args_mapping: |
@@ -284,6 +288,7 @@ output:
             this.status,
             this.status_created_at,
             this.status_changed_by,
+            this.status_change_reason,
             this.current_status,
             this.priority
           ]
@@ -303,6 +308,7 @@ output:
           );
         query: |
           INSERT INTO datatracker (source, reference_date)
-          VALUES ('transports_requests_1', ?)
-          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+          VALUES ('transports_requests', ?)
+          ON DUPLICATE KEY UPDATE 
+            reference_date = GREATEST(reference_date, VALUES(reference_date));
         args_mapping: root = [ this.status_created_at ]
