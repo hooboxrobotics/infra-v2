@@ -1,7 +1,7 @@
 clusterName: hbx-prd
 region: sa-east-1
 # Explicito para nao depender do IMDS (hop limit dos nos bloqueia auto-discovery).
-vpcId: vpc-0f606b0adf0e08852
+vpcId: vpc-00e9049034b834392
 
 serviceAccount:
   create: true
