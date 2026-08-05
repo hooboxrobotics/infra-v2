@@ -1,123 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  annotations:
-    deployment.kubernetes.io/revision: "99"
-  creationTimestamp: "2023-12-07T02:29:15Z"
-  generation: 103
   labels:
-    app: app-frontend-roompatient-apps
-  name: app-frontend-roompatient-apps
+    app: app-frontend-roompatient
+  name: app-frontend-roompatient
   namespace: apps-app-frontend
-  resourceVersion: "454531885"
-  uid: 7a11574d-ddf6-4b42-8901-30247d606e63
 spec:
-  progressDeadlineSeconds: 600
   replicas: 1
-  revisionHistoryLimit: 10
   selector:
     matchLabels:
-      app: app-frontend-roompatient-apps
-  strategy:
-    rollingUpdate:
-      maxSurge: 25%
-      maxUnavailable: 25%
-    type: RollingUpdate
+      app: app-frontend-roompatient
   template:
     metadata:
       labels:
-        app: app-frontend-roompatient-apps
+        app: app-frontend-roompatient
     spec:
       containers:
-      - image: docker.io/devopsfaith/krakend:2.5
-        imagePullPolicy: IfNotPresent
-        name: app-frontend-roompatient-gw
-        ports:
-        - containerPort: 8080
-          protocol: TCP
-        - containerPort: 8000
-          protocol: TCP
-        resources: {}
-        terminationMessagePath: /dev/termination-log
-        terminationMessagePolicy: File
-        volumeMounts:
-        - mountPath: /etc/krakend/krakend.json
-          name: app-frontend-roompatient
-          readOnly: true
-          subPath: krakend.json
-      - env:
-        - name: PORT
-          value: "3000"
-        - name: JWKS_URI
-          value: https://auth.hoobox.one/realms/hoobox/protocol/openid-connect/certs
-        - name: APP_VSN
-          value: 6df35d
-        - name: DB_CA_CERT_PATH
-          value: /etc/configmap/ca-certificate.pem
-        envFrom:
-        - secretRef:
-            name: app-frontend-roompatient
-            optional: true
-        - secretRef:
-            name: app-frontend-roompatient-db
-            optional: true
-        - secretRef:
-            name: app-frontend-roompatient-rmq
-            optional: true
-        - secretRef:
-            name: app-frontend-roompatient-objectstorage
-            optional: true
-        - secretRef:
-            name: app-frontend-roompatient-newrelic
-            optional: true
-        - secretRef:
-            name: app-frontend-roompatient-client-credentials
-            optional: true
-        - secretRef:
-            name: app-frontend-roompatient-apps
-            optional: true
         image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/app-frontend-roompatient:6df35d
         imagePullPolicy: IfNotPresent
         name: app-frontend-roompatient-app
         ports:
-        - containerPort: 3000
-          protocol: TCP
-        resources: {}
-        terminationMessagePath: /dev/termination-log
-        terminationMessagePolicy: File
-        volumeMounts:
-        - mountPath: /etc/configmap
-          name: app-frontend-roompatient
-          readOnly: true
-      dnsPolicy: ClusterFirst
+          - containerPort: 3000
+            protocol: TCP
       nodeSelector:
-        group: apps
+        group: workload
       restartPolicy: Always
-      schedulerName: default-scheduler
-      securityContext: {}
-      terminationGracePeriodSeconds: 30
-      volumes:
-      - configMap:
-          defaultMode: 420
-          name: app-frontend-roompatient
-        name: app-frontend-roompatient
-status:
-  availableReplicas: 1
-  conditions:
-  - lastTransitionTime: "2026-03-30T12:29:36Z"
-    lastUpdateTime: "2026-03-30T12:29:36Z"
-    message: Deployment has minimum availability.
-    reason: MinimumReplicasAvailable
-    status: "True"
-    type: Available
-  - lastTransitionTime: "2024-01-31T15:57:32Z"
-    lastUpdateTime: "2026-07-16T13:42:18Z"
-    message: ReplicaSet "app-frontend-roompatient-apps-74df959994" has successfully
-      progressed.
-    reason: NewReplicaSetAvailable
-    status: "True"
-    type: Progressing
-  observedGeneration: 103
-  readyReplicas: 1
-  replicas: 1
-  updatedReplicas: 1
