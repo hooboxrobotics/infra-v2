@@ -22,6 +22,13 @@ module "eks" {
     kube-proxy = {}
     vpc-cni = {
       before_compute = true
+
+      configuration_values = jsonencode({
+        env = {
+          MINIMUM_IP_TARGET = "2"
+          WARM_IP_TARGET    = "4"
+        }
+      })
     }
     eks-pod-identity-agent = {}
     aws-ebs-csi-driver     = {}
