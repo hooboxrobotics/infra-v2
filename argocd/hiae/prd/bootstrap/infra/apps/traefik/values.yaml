@@ -27,7 +27,7 @@ service:
     service.beta.kubernetes.io/aws-load-balancer-type: external
     service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
     service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-    service.beta.kubernetes.io/aws-load-balancer-subnets: subnet-03d4fde470eedf33c,subnet-0b8e7ad8d4f138241,subnet-0eba1ad2e33521ad6
+    service.beta.kubernetes.io/aws-load-balancer-subnets: subnet-00f35efcaeb8edb42,subnet-0cb5c243e87d042fa
 
 ingressClass:
   enabled: true

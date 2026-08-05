@@ -29,19 +29,37 @@ input:
                 WHERE d.source = 'transports_requests'
               )
             ),
+            UpdatedTransporters AS (
+              SELECT DISTINCT OTTO.id_order
+              FROM shared_api_reports.orderedtotransportorder OTTO
+              STRAIGHT_JOIN shared_api_reports.transportorders T
+                ON T.id_order = OTTO.id_order
+              WHERE 
+                OTTO.created_at >= (
+                  SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
+                  FROM benthos.datatracker d
+                  WHERE d.source = 'transports_requests'
+                ) 
+                OR OTTO.deleted_at >= (
+                  SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00')
+                  FROM benthos.datatracker d
+                  WHERE d.source = 'transports_requests'
+                )
+            ),
             ImpactedOrders AS (
               SELECT id_order FROM UpdatedTransportOrders
               UNION
               SELECT order_id FROM UpdatedByStatus
+              UNION
+              SELECT id_order FROM UpdatedTransporters
             ),
             OrderedToAgg AS (
               SELECT
                 OTTO.id_order,
-                JSON_ARRAYAGG(OTTO.id_ordered_to) AS ordered_to_ids,
-                JSON_ARRAYAGG(OTTO.created_at) AS ordered_to_created_at,
-                JSON_ARRAYAGG(OTTO.deleted_at) AS ordered_to_deleted_at
+                JSON_ARRAYAGG(OTTO.id_ordered_to) AS ordered_to_ids
               FROM ImpactedOrders IO
               JOIN shared_api_reports.orderedtotransportorder OTTO ON OTTO.id_order = IO.id_order
+              WHERE OTTO.deleted_at IS NULL
               GROUP BY OTTO.id_order
             )
             SELECT
@@ -56,12 +74,11 @@ input:
               T.issuer AS issuer_id,
               T.id_ordered_to,
               OTTO.ordered_to_ids,
-              OTTO.ordered_to_created_at,
-              OTTO.ordered_to_deleted_at,
               OS.order_status_id,
               OS.status_id,
               OS.created_at AS status_created_at,
               OS.created_by,
+              OS.reason AS status_change_reason,
               P.priority
             FROM shared_api_reports.transportorders T
             JOIN ImpactedOrders IO 
@@ -85,26 +102,10 @@ pipeline:
       root.etl_id = "%s%s".format(this.id_order, this.order_status_id)
       root.etl_id = root.etl_id.hash("md5").encode("hex")
 
-  - label: processor_filter_ordered_to_ids
+  - label: processor_deduplicate_ordered_to_ids
     bloblang: |
       root = this
-      root.saved = this.ordered_to_ids
-      let parsedIds = this.ordered_to_ids.or("[]").parse_json().catch([])
-      let parsedCreatedAts = this.ordered_to_created_at.or("[]").parse_json().catch([])
-      let parsedDeletedAts = this.ordered_to_deleted_at.or("[]").parse_json().catch([])
-      let statusTs = this.status_created_at.ts_parse("2006-01-02 15:04:05").ts_unix()
-      let firstFilter = $parsedIds.enumerated().map_each(element -> if $parsedCreatedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() <= $statusTs {
-          element.value
-        } else {
-          deleted()
-        }
-      )
-      root.ordered_to_ids = $firstFilter.enumerated().map_each(element -> if $parsedDeletedAts.index(element.index) == null || $parsedDeletedAts.index(element.index).ts_parse("2006-01-02 15:04:05").ts_unix() > $statusTs {
-          element.value
-        } else {
-          deleted()
-        }
-      )
+      root.ordered_to_ids = this.ordered_to_ids.or("[]").parse_json().unique()
 
   - label: processor_get_users_info
     branch:
@@ -229,6 +230,7 @@ output:
             `status` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
             `status_date` datetime DEFAULT NULL,
             `status_changed_by` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            `status_change_reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
             `current_status` tinyint(1) DEFAULT NULL,
             `priority` int DEFAULT NULL,
             PRIMARY KEY (`etl_id`),
@@ -252,9 +254,10 @@ output:
             status,
             status_date,
             status_changed_by,
+            status_change_reason,
             current_status,
             priority
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE
             created_at = COALESCE(VALUES(created_at), created_at),
             updated_at = COALESCE(VALUES(updated_at), updated_at),
@@ -267,6 +270,7 @@ output:
             status = COALESCE(VALUES(status), status),
             status_date = COALESCE(VALUES(status_date), status_date),
             status_changed_by = COALESCE(VALUES(status_changed_by), status_changed_by),
+            status_change_reason = COALESCE(VALUES(status_change_reason), status_change_reason),
             current_status = COALESCE(VALUES(current_status), current_status),
             priority = COALESCE(VALUES(priority), priority);
         args_mapping: |
@@ -284,6 +288,7 @@ output:
             this.status,
             this.status_created_at,
             this.status_changed_by,
+            this.status_change_reason,
             this.current_status,
             this.priority
           ]
@@ -304,5 +309,6 @@ output:
         query: |
           INSERT INTO datatracker (source, reference_date)
           VALUES ('transports_requests', ?)
-          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+          ON DUPLICATE KEY UPDATE 
+            reference_date = GREATEST(reference_date, VALUES(reference_date));
         args_mapping: root = [ this.status_created_at ]
