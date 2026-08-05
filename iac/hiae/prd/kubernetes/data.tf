@@ -2,9 +2,6 @@ data "aws_vpc" "network" {
   id = "vpc-00e9049034b834392"
 }
 
-# subnet-0cb5c243e87d042fa
-# subnet-00f35efcaeb8edb42
-
 data "aws_subnets" "eks_control_plane" {
   filter {
     name   = "vpc-id"
