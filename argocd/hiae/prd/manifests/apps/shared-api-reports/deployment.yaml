@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "196"
+  creationTimestamp: "2023-12-07T02:55:45Z"
+  generation: 202
+  labels:
+    app: shared-api-reports-apps
+  name: shared-api-reports-apps
+  namespace: apps-shared-api
+  resourceVersion: "464599678"
+  uid: d0f12f39-8751-4411-913a-cc85f647331e
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: shared-api-reports-apps
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2024-07-03T11:19:29-03:00"
+      labels:
+        app: shared-api-reports-apps
+    spec:
+      containers:
+      - image: docker.io/devopsfaith/krakend:2.5
+        imagePullPolicy: IfNotPresent
+        name: shared-api-reports-gw
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        - containerPort: 8000
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/krakend/krakend.json
+          name: shared-api-reports
+          readOnly: true
+          subPath: krakend.json
+      - env:
+        - name: PORT
+          value: "3000"
+        - name: JWKS_URI
+          value: https://auth.hoobox.one/realms/hoobox/protocol/openid-connect/certs
+        - name: APP_VSN
+          value: a5b0a6
+        - name: DB_CA_CERT_PATH
+          value: /etc/configmap/ca-certificate.pem
+        envFrom:
+        - secretRef:
+            name: shared-api-reports
+            optional: true
+        - secretRef:
+            name: shared-api-reports-db
+            optional: true
+        - secretRef:
+            name: shared-api-reports-rmq
+            optional: true
+        - secretRef:
+            name: shared-api-reports-objectstorage
+            optional: true
+        - secretRef:
+            name: shared-api-reports-newrelic
+            optional: true
+        - secretRef:
+            name: shared-api-reports-client-credentials
+            optional: true
+        - secretRef:
+            name: shared-api-reports-apps
+            optional: true
+        image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-reports:a5b0a6
+        imagePullPolicy: IfNotPresent
+        name: shared-api-reports-app
+        ports:
+        - containerPort: 3000
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 1800m
+            memory: 2Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/configmap
+          name: shared-api-reports
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        group: Reports
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: group
+        operator: Equal
+        value: Reports
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: shared-api-reports
+        name: shared-api-reports
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2026-08-04T13:53:51Z"
+    lastUpdateTime: "2026-08-04T13:53:51Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: "2023-12-07T02:55:45Z"
+    lastUpdateTime: "2026-08-04T22:46:13Z"
+    message: ReplicaSet "shared-api-reports-apps-6d94f86877" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  observedGeneration: 202
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1

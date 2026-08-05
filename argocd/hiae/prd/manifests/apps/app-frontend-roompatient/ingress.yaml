@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: ca-issuer-prod-app-frontend-roompatient-apps
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  creationTimestamp: "2023-12-07T02:29:15Z"
+  generation: 2
+  name: app-frontend-roompatient-apps
+  namespace: apps-app-frontend
+  resourceVersion: "203493451"
+  uid: 8cf3d00a-a6cd-4273-8746-018385de633f
+spec:
+  rules:
+  - host: roompatient.hoobox.one
+    http:
+      paths:
+      - backend:
+          service:
+            name: app-frontend-roompatient-apps
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - roompatient.hoobox.one
+    secretName: roompatient-hoobox-one-tls
+status:
+  loadBalancer:
+    ingress:
+    - hostname: a9decaed647ed4fa7bd2dd616a00e46b-1650260671.sa-east-1.elb.amazonaws.com

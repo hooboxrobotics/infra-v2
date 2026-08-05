@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: ca-issuer-prod-shared-api-forms-apps
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  creationTimestamp: "2023-12-10T01:27:20Z"
+  generation: 2
+  name: shared-api-forms-apps
+  namespace: apps-shared-api
+  resourceVersion: "202759078"
+  uid: 6733a627-c445-44a8-8a87-5379a87260df
+spec:
+  rules:
+  - host: forms-api.hoobox.one
+    http:
+      paths:
+      - backend:
+          service:
+            name: shared-api-forms-apps
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - forms-api.hoobox.one
+    secretName: forms-api-hoobox-one-tls
+status:
+  loadBalancer:
+    ingress:
+    - hostname: a9decaed647ed4fa7bd2dd616a00e46b-1650260671.sa-east-1.elb.amazonaws.com

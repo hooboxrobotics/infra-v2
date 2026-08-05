@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: "2023-12-07T02:38:33Z"
+  name: room-dash-app-apps
+  namespace: apps-room-dash
+  resourceVersion: "211782562"
+  uid: a7f6c7fd-77bc-4531-bdfe-41c27038c30b
+spec:
+  clusterIP: 172.20.100.247
+  clusterIPs:
+  - 172.20.100.247
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 3000
+  selector:
+    app: room-dash-app-apps
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}

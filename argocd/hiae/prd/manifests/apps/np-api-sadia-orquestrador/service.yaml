@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: "2026-06-30T18:07:49Z"
+  name: np-api-sadia-orquestrador-apps
+  namespace: apps-np-api
+  resourceVersion: "421991579"
+  uid: 2816def5-a8a8-4b0c-9536-59f9ecc49adc
+spec:
+  clusterIP: 172.20.10.95
+  clusterIPs:
+  - 172.20.10.95
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 3000
+  selector:
+    app: np-api-sadia-orquestrador-apps
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}

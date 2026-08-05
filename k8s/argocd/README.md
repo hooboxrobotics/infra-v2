@@ -30,7 +30,7 @@ helm install argocd argo-cd \
   --version 9.4.10 \
   --namespace argocd \
   --create-namespace \
-  --values k8s/argocd/infra/apps/argocd/values.yaml
+  --values argocd/hiae/prd/bootstrap/infra/apps/argocd/values.yaml
 ```
 
 #### 2. Configurar credencial dos repositórios da organização
@@ -48,6 +48,14 @@ kubectl create secret generic github-app-credentials \
   --from-literal=githubAppInstallationID=<INSTALLATION_ID> \
   --from-file=githubAppPrivateRSAKey=<path-to-private-key.pem>
 
+kubectl create secret generic github-app-credentials \
+  --namespace argocd \
+  --from-literal=type=git \
+  --from-literal=url=https://github.com/hooboxrobotics \
+  --from-literal=githubAppID=3570874 \
+  --from-literal=githubAppInstallationID=128756726 \
+  --from-file=githubAppPrivateRSAKey=tmp/argocd-hoobox.2026-05-01.private-key.pem
+
 kubectl label secret github-app-credentials \
   --namespace argocd \
   argocd.argoproj.io/secret-type=repo-creds
@@ -58,7 +66,7 @@ kubectl label secret github-app-credentials \
 #### 3. Aplicar o bootstrap
 
 ```bash
-kubectl apply -f argocd/bootstrap.yaml
+kubectl apply -f argocd/hiae/prd/bootstrap/bootstrap.yaml
 ```
 
 O ArgoCD irá sincronizar automaticamente todos os componentes:

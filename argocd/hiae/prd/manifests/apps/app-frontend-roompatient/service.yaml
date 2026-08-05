@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: "2023-12-07T02:29:15Z"
+  name: app-frontend-roompatient-apps
+  namespace: apps-app-frontend
+  resourceVersion: "203493450"
+  uid: f4b9e472-6eb4-416f-bd89-60b94366bb65
+spec:
+  clusterIP: 172.20.109.118
+  clusterIPs:
+  - 172.20.109.118
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 3000
+  selector:
+    app: app-frontend-roompatient-apps
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}

@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: ca-issuer-prod-room-dash-app-apps
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  creationTimestamp: "2023-12-07T02:38:33Z"
+  generation: 2
+  name: room-dash-app-apps
+  namespace: apps-room-dash
+  resourceVersion: "211782598"
+  uid: f69c7792-e937-4480-8374-90fe187a3fd5
+spec:
+  rules:
+  - host: app.room.hoobox.one
+    http:
+      paths:
+      - backend:
+          service:
+            name: room-dash-app-apps
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - app.room.hoobox.one
+    secretName: app-room-hoobox-one-tls
+status:
+  loadBalancer:
+    ingress:
+    - hostname: a9decaed647ed4fa7bd2dd616a00e46b-1650260671.sa-east-1.elb.amazonaws.com

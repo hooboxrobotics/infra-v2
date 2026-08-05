@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: ca-issuer-prod-app-frontend-suporte-apps
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  creationTimestamp: "2023-11-25T00:47:40Z"
+  generation: 2
+  name: app-frontend-suporte-apps
+  namespace: apps-app-frontend
+  resourceVersion: "204047294"
+  uid: 2c5071c6-abee-4362-8bf5-0007d759701a
+spec:
+  rules:
+  - host: suporte.hoobox.one
+    http:
+      paths:
+      - backend:
+          service:
+            name: app-frontend-suporte-apps
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - suporte.hoobox.one
+    secretName: suporte-hoobox-one-tls
+status:
+  loadBalancer:
+    ingress:
+    - hostname: a9decaed647ed4fa7bd2dd616a00e46b-1650260671.sa-east-1.elb.amazonaws.com

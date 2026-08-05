@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "136"
+  creationTimestamp: "2023-11-25T00:45:54Z"
+  generation: 140
+  labels:
+    app: app-frontend-suporte-apps
+  name: app-frontend-suporte-apps
+  namespace: apps-app-frontend
+  resourceVersion: "464596271"
+  uid: 0bf401df-b49a-44fa-a8f8-177a7a43949c
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: app-frontend-suporte-apps
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: app-frontend-suporte-apps
+    spec:
+      containers:
+      - image: docker.io/devopsfaith/krakend:2.5
+        imagePullPolicy: IfNotPresent
+        name: app-frontend-suporte-gw
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/krakend/krakend.json
+          name: app-frontend-suporte
+          readOnly: true
+          subPath: krakend.json
+      - env:
+        - name: PORT
+          value: "3000"
+        - name: JWKS_URI
+          value: https://auth.hoobox.one/realms/hoobox/protocol/openid-connect/certs
+        - name: APP_VSN
+          value: fdad8e
+        - name: DB_CA_CERT_PATH
+          value: /etc/configmap/ca-certificate.pem
+        envFrom:
+        - secretRef:
+            name: app-frontend-suporte
+            optional: true
+        - secretRef:
+            name: app-frontend-suporte-db
+            optional: true
+        - secretRef:
+            name: app-frontend-suporte-rmq
+            optional: true
+        - secretRef:
+            name: app-frontend-suporte-objectstorage
+            optional: true
+        - secretRef:
+            name: app-frontend-suporte-newrelic
+            optional: true
+        - secretRef:
+            name: app-frontend-suporte-client-credentials
+            optional: true
+        - secretRef:
+            name: app-frontend-suporte-apps
+            optional: true
+        image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/app-frontend-suporte:fdad8e
+        imagePullPolicy: IfNotPresent
+        name: app-frontend-suporte-app
+        ports:
+        - containerPort: 3000
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/configmap
+          name: app-frontend-suporte
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        group: apps
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: app-frontend-suporte
+        name: app-frontend-suporte
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2026-05-12T11:22:45Z"
+    lastUpdateTime: "2026-05-12T11:22:45Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: "2023-11-25T00:45:54Z"
+    lastUpdateTime: "2026-08-04T22:37:14Z"
+    message: ReplicaSet "app-frontend-suporte-apps-9c5f778d" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  observedGeneration: 140
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1
