@@ -16,7 +16,7 @@ spec:
         app: app-frontend-roompatient
     spec:
       nodeSelector:
-        group: workload
+        group: workers
       restartPolicy: Always
       containers:
         - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/app-frontend-roompatient:6df35d
