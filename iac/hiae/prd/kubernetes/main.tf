@@ -55,27 +55,14 @@ module "eks" {
       subnet_ids = data.aws_subnets.eks_common_nodes.ids
     }
 
-    workers = {
-      name = "workers"
+    workloads = {
+      name = "workloads"
       labels = {
-        workload = "workers"
+        workload = "workloads"
       }
 
-      # This Node Group is reserved only for background workers, like cronjobs,
-      # queue consumers, and etc.
-      #
-      # To run here, a Pod must select workload=workers AND tolerate the matching
-      # taint to run here.
-      taints = {
-        workload = {
-          key    = "workload"
-          value  = "workers"
-          effect = "NO_SCHEDULE"
-        }
-      }
-
-      ami_type       = "AL2023_ARM_64_STANDARD"
-      instance_types = ["t4g.large"]
+      ami_type       = "AL2023_x86_64_STANDARD"
+      instance_types = ["t3.large"]
       capacity_type  = "ON_DEMAND"
 
       min_size     = 1
