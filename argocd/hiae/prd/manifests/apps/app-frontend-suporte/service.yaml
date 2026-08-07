@@ -1,26 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: "2023-11-25T00:47:40Z"
-  name: app-frontend-suporte-apps
+  name: app-frontend-suporte
   namespace: apps-app-frontend
-  resourceVersion: "204047293"
-  uid: affdbedf-1904-4379-a222-c092c6ea60fd
 spec:
-  clusterIP: 172.20.168.137
-  clusterIPs:
-  - 172.20.168.137
-  internalTrafficPolicy: Cluster
-  ipFamilies:
-  - IPv4
-  ipFamilyPolicy: SingleStack
   ports:
   - port: 80
     protocol: TCP
     targetPort: 3000
   selector:
-    app: app-frontend-suporte-apps
-  sessionAffinity: None
-  type: ClusterIP
-status:
-  loadBalancer: {}
+    app: app-frontend-suporte
