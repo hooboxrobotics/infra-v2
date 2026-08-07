@@ -9,10 +9,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - app.room.hoobox.einstein.br
+        - app.room-hoobox.einstein.br
       secretName: room-dash-app-tls
   rules:
-  - host: app.room.hoobox.einstein.br
+  - host: app.room-hoobox.einstein.br
     http:
       paths:
       - backend:

@@ -9,10 +9,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - roompatient.hoobox.einstein.br
+        - roompatient-hoobox.einstein.br
       secretName: app-frontend-roompatient-tls
   rules:
-    - host: roompatient.hoobox.einstein.br
+    - host: roompatient-hoobox.einstein.br
       http:
         paths:
           - backend:

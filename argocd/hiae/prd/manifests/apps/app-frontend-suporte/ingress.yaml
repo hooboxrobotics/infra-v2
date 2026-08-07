@@ -9,10 +9,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - suporte.hoobox.einstein.br
+        - suporte-hoobox.einstein.br
       secretName: app-frontend-suporte-tls
   rules:
-  - host: suporte.hoobox.einstein.br
+  - host: suporte-hoobox.einstein.br
     http:
       paths:
       - backend:

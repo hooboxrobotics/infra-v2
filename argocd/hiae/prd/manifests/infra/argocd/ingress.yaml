@@ -12,10 +12,10 @@ spec:
   ingressClassName: traefik
   tls:
     - hosts:
-        - argocd.prd.hoobox.einstein.br
+        - argocd-hoobox.einstein.br
       secretName: argocd-tls
   rules:
-    - host: argocd.prd.hoobox.einstein.br
+    - host: argocd-hoobox.einstein.br
       http:
         paths:
           - path: /
