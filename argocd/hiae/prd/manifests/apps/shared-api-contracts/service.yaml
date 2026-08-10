@@ -1,26 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: "2023-12-10T00:44:05Z"
-  name: shared-api-contracts-apps
+  name: shared-api-contracts
   namespace: apps-shared-api
-  resourceVersion: "216651962"
-  uid: 46ff541c-1f34-4d90-9543-46dd16558a32
 spec:
-  clusterIP: 172.20.6.221
-  clusterIPs:
-  - 172.20.6.221
-  internalTrafficPolicy: Cluster
-  ipFamilies:
-  - IPv4
-  ipFamilyPolicy: SingleStack
   ports:
   - port: 80
     protocol: TCP
     targetPort: 3000
   selector:
-    app: shared-api-contracts-apps
-  sessionAffinity: None
-  type: ClusterIP
-status:
-  loadBalancer: {}
+    app: shared-api-contracts
