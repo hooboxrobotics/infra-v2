@@ -1,34 +1,24 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  annotations:
-    cert-manager.io/cluster-issuer: ca-issuer-prod-np-api-gateway-apps
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-  creationTimestamp: "2023-12-06T03:34:55Z"
-  generation: 2
-  name: np-api-gateway-apps
+  name: np-api-gateway
   namespace: apps-np-api
-  resourceVersion: "212228839"
-  uid: 87febdd4-871e-4efd-bb2d-625fcad0327b
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    traefik.ingress.kubernetes.io/router.middlewares: traefik-redirect-to-https@kubernetescrd
 spec:
+  tls:
+  - hosts:
+    - gateway-api-hoobox.einstein.br
+    secretName: gateway-api-hoobox-one-tls
   rules:
-  - host: gateway-api.np.hoobox.one
+  - host: gateway-api-hoobox.einstein.br
     http:
       paths:
       - backend:
           service:
-            name: np-api-gateway-apps
+            name: np-api-gateway
             port:
               number: 80
         path: /
         pathType: Prefix
-  tls:
-  - hosts:
-    - gateway-api.np.hoobox.one
-    secretName: gateway-api-np-hoobox-one-tls
-status:
-  loadBalancer:
-    ingress:
-    - hostname: a9decaed647ed4fa7bd2dd616a00e46b-1650260671.sa-east-1.elb.amazonaws.com

@@ -1,26 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: "2023-12-06T03:34:55Z"
-  name: np-api-gateway-apps
+  name: np-api-gateway
   namespace: apps-np-api
-  resourceVersion: "212228825"
-  uid: c664e697-00ff-4870-bad6-f22a79edba91
 spec:
-  clusterIP: 172.20.124.11
-  clusterIPs:
-  - 172.20.124.11
-  internalTrafficPolicy: Cluster
-  ipFamilies:
-  - IPv4
-  ipFamilyPolicy: SingleStack
   ports:
   - port: 80
     protocol: TCP
     targetPort: 3000
   selector:
-    app: np-api-gateway-apps
-  sessionAffinity: None
-  type: ClusterIP
-status:
-  loadBalancer: {}
+    app: np-api-gateway
