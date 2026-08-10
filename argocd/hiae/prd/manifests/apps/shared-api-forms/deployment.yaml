@@ -16,7 +16,7 @@ spec:
         app: shared-api-forms
     spec:
       containers:
-      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-forms:ae7811
+      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-forms:33f6b2
         imagePullPolicy: IfNotPresent
         name: shared-api-forms-app
         ports:
