@@ -1,26 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: "2023-12-07T02:55:45Z"
-  name: shared-api-reports-apps
+  name: shared-api-reports
   namespace: apps-shared-api
-  resourceVersion: "209862685"
-  uid: 31cf3bd7-3edd-4dad-b176-d0d612a82b7f
 spec:
-  clusterIP: 172.20.44.86
-  clusterIPs:
-  - 172.20.44.86
-  internalTrafficPolicy: Cluster
-  ipFamilies:
-  - IPv4
-  ipFamilyPolicy: SingleStack
   ports:
   - port: 80
     protocol: TCP
     targetPort: 3000
   selector:
-    app: shared-api-reports-apps
-  sessionAffinity: None
-  type: ClusterIP
-status:
-  loadBalancer: {}
+    app: shared-api-reports
