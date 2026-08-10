@@ -1,7 +1,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: shared-api-forms-apps
+  name: shared-api-forms
   namespace: apps-shared-api
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
