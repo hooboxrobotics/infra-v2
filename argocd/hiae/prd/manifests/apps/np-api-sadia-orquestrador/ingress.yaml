@@ -7,10 +7,6 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt
     traefik.ingress.kubernetes.io/router.middlewares: traefik-redirect-to-https@kubernetescrd
 spec:
-  tls:
-    - hosts:
-        - sadia-orquestrador-hoobox.einstein.br
-      secretName: app-frontend-roompatient-tls
   rules:
   - host: sadia-orquestrador-hoobox.einstein.br
     http:
@@ -22,3 +18,7 @@ spec:
               number: 80
         path: /
         pathType: Prefix
+  tls:
+  - hosts:
+    - sadia-orquestrador-hoobox.einstein.br
+    secretName: app-frontend-roompatient-tls

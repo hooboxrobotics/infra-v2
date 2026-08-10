@@ -7,10 +7,6 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt
     traefik.ingress.kubernetes.io/router.middlewares: traefik-redirect-to-https@kubernetescrd
 spec:
-  tls:
-    - hosts:
-        - suporte-hoobox.einstein.br
-      secretName: app-frontend-suporte-tls
   rules:
   - host: suporte-hoobox.einstein.br
     http:
@@ -22,3 +18,7 @@ spec:
               number: 80
         path: /
         pathType: Prefix
+  tls:
+  - hosts:
+    - suporte-hoobox.einstein.br
+    secretName: app-frontend-suporte-tls

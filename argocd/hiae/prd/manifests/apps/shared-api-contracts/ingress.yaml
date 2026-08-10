@@ -7,10 +7,6 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt
     traefik.ingress.kubernetes.io/router.middlewares: traefik-redirect-to-https@kubernetescrd
 spec:
-  tls:
-  - hosts:
-    - contracts-api-hoobox.einstein.br
-    secretName: contracts-api-hoobox-one-tls
   rules:
   - host: contracts-api-hoobox.einstein.br
     http:
@@ -22,4 +18,7 @@ spec:
               number: 80
         path: /
         pathType: Prefix
-
+  tls:
+  - hosts:
+    - contracts-api-hoobox.einstein.br
+    secretName: contracts-api-hoobox-one-tls
