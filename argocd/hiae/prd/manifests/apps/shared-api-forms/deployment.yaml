@@ -1,128 +1,28 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  annotations:
-    deployment.kubernetes.io/revision: "80"
-  creationTimestamp: "2023-12-10T01:27:20Z"
-  generation: 86
   labels:
-    app: shared-api-forms-apps
-  name: shared-api-forms-apps
+    app: shared-api-forms
+  name: shared-api-forms
   namespace: apps-shared-api
-  resourceVersion: "464597795"
-  uid: ef3a3318-949b-4a1d-bb9e-ba51b4bf7325
 spec:
-  progressDeadlineSeconds: 600
   replicas: 1
-  revisionHistoryLimit: 10
   selector:
     matchLabels:
-      app: shared-api-forms-apps
-  strategy:
-    rollingUpdate:
-      maxSurge: 25%
-      maxUnavailable: 25%
-    type: RollingUpdate
+      app: shared-api-forms
   template:
     metadata:
-      annotations:
-        kubectl.kubernetes.io/restartedAt: "2024-04-08T21:00:42-03:00"
       labels:
-        app: shared-api-forms-apps
+        app: shared-api-forms
     spec:
       containers:
-      - image: docker.io/devopsfaith/krakend:2.5
-        imagePullPolicy: IfNotPresent
-        name: shared-api-forms-gw
-        ports:
-        - containerPort: 8000
-          protocol: TCP
-        - containerPort: 8080
-          protocol: TCP
-        resources: {}
-        terminationMessagePath: /dev/termination-log
-        terminationMessagePolicy: File
-        volumeMounts:
-        - mountPath: /etc/krakend/krakend.json
-          name: shared-api-forms
-          readOnly: true
-          subPath: krakend.json
-      - env:
-        - name: PORT
-          value: "3000"
-        - name: JWKS_URI
-          value: https://auth.hoobox.one/realms/hoobox/protocol/openid-connect/certs
-        - name: APP_VSN
-          value: ae7811
-        - name: DB_CA_CERT_PATH
-          value: /etc/configmap/ca-certificate.pem
-        envFrom:
-        - secretRef:
-            name: shared-api-forms
-            optional: true
-        - secretRef:
-            name: shared-api-forms-db
-            optional: true
-        - secretRef:
-            name: shared-api-forms-rmq
-            optional: true
-        - secretRef:
-            name: shared-api-forms-objectstorage
-            optional: true
-        - secretRef:
-            name: shared-api-forms-newrelic
-            optional: true
-        - secretRef:
-            name: shared-api-forms-client-credentials
-            optional: true
-        - secretRef:
-            name: shared-api-forms-apps
-            optional: true
-        image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-forms:ae7811
+      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-forms:ae7811
         imagePullPolicy: IfNotPresent
         name: shared-api-forms-app
         ports:
         - containerPort: 3000
           protocol: TCP
-        resources:
-          limits:
-            cpu: 500m
-            memory: 512Mi
-          requests:
-            cpu: 500m
-            memory: 512Mi
-        terminationMessagePath: /dev/termination-log
-        terminationMessagePolicy: File
-        volumeMounts:
-        - mountPath: /etc/configmap
-          name: shared-api-forms
-          readOnly: true
-      dnsPolicy: ClusterFirst
-      restartPolicy: Always
-      schedulerName: default-scheduler
-      securityContext: {}
-      terminationGracePeriodSeconds: 30
-      volumes:
-      - configMap:
-          defaultMode: 420
-          name: shared-api-forms
-        name: shared-api-forms
-status:
-  availableReplicas: 1
-  conditions:
-  - lastTransitionTime: "2026-08-04T04:59:28Z"
-    lastUpdateTime: "2026-08-04T04:59:28Z"
-    message: Deployment has minimum availability.
-    reason: MinimumReplicasAvailable
-    status: "True"
-    type: Available
-  - lastTransitionTime: "2023-12-10T01:27:20Z"
-    lastUpdateTime: "2026-08-04T22:41:03Z"
-    message: ReplicaSet "shared-api-forms-apps-7448c5696f" has successfully progressed.
-    reason: NewReplicaSetAvailable
-    status: "True"
-    type: Progressing
-  observedGeneration: 86
-  readyReplicas: 1
-  replicas: 1
-  updatedReplicas: 1
+      envFrom:
+          - secretRef:
+              name: shared-api-forms
+              optional: true

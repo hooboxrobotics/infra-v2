@@ -1,26 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: "2023-12-10T01:27:20Z"
-  name: shared-api-forms-apps
+  name: shared-api-forms
   namespace: apps-shared-api
-  resourceVersion: "202759064"
-  uid: 9b487cfd-5acc-4faf-ad35-b7ceb26d1293
 spec:
-  clusterIP: 172.20.231.84
-  clusterIPs:
-  - 172.20.231.84
-  internalTrafficPolicy: Cluster
-  ipFamilies:
-  - IPv4
-  ipFamilyPolicy: SingleStack
   ports:
   - port: 80
     protocol: TCP
     targetPort: 3000
   selector:
-    app: shared-api-forms-apps
-  sessionAffinity: None
-  type: ClusterIP
-status:
-  loadBalancer: {}
+    app: shared-api-forms
