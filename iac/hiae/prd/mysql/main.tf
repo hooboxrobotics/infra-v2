@@ -20,7 +20,14 @@ resource "aws_security_group" "database" {
     from_port   = local.db_port
     to_port     = local.db_port
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.network.cidr_block]
+    cidr_blocks = concat([data.aws_vpc.network.cidr_block], data.aws_vpc.network.cidr_block_associations.*.cidr_block)
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = concat([data.aws_vpc.network.cidr_block], data.aws_vpc.network.cidr_block_associations.*.cidr_block)
   }
 }
 
