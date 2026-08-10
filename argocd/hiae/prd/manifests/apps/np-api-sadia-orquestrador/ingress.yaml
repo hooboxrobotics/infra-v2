@@ -1,34 +1,24 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  annotations:
-    cert-manager.io/cluster-issuer: ca-issuer-prod-np-api-sadia-orquestrador-apps
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-  creationTimestamp: "2026-06-30T18:07:49Z"
-  generation: 1
-  name: np-api-sadia-orquestrador-apps
+  name: np-api-sadia-orquestrador
   namespace: apps-np-api
-  resourceVersion: "421991672"
-  uid: 3cba4334-9302-4d10-b61f-9ec4d1409d74
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    traefik.ingress.kubernetes.io/router.middlewares: traefik-redirect-to-https@kubernetescrd
 spec:
+  tls:
+    - hosts:
+        - sadia-orquestrador-hoobox.einstein.br
+      secretName: app-frontend-roompatient-tls
   rules:
-  - host: sadia-orquestrador.hml.hoobox.one
+  - host: sadia-orquestrador-hoobox.einstein.br
     http:
       paths:
       - backend:
           service:
-            name: np-api-sadia-orquestrador-apps
+            name: np-api-sadia-orquestrador
             port:
               number: 80
         path: /
         pathType: Prefix
-  tls:
-  - hosts:
-    - sadia-orquestrador.hml.hoobox.one
-    secretName: sadia-orquestrador-hml-hoobox-one-tls
-status:
-  loadBalancer:
-    ingress:
-    - hostname: ab500c887afb84df7be3b1d45aab066a-1399645057.sa-east-1.elb.amazonaws.com
