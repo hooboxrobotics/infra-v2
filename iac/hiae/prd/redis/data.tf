@@ -2,6 +2,11 @@ data "aws_vpc" "network" {
   id = "vpc-00e9049034b834392"
 }
 
+data "aws_security_group" "database" {
+  name   = "database"
+  vpc_id = data.aws_vpc.network.id
+}
+
 data "aws_subnets" "database" {
   filter {
     name   = "vpc-id"

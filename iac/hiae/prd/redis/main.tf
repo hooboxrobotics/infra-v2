@@ -7,18 +7,6 @@ locals {
   db_port    = 6379
 }
 
-resource "aws_security_group" "database" {
-  name   = "database"
-  vpc_id = data.aws_vpc.network.id
-
-  ingress {
-    from_port   = local.db_port
-    to_port     = local.db_port
-    protocol    = "tcp"
-    cidr_blocks = concat([data.aws_vpc.network.cidr_block], data.aws_vpc.network.cidr_block_associations.*.cidr_block)
-  }
-}
-
 module "elasticache" {
   source = "terraform-aws-modules/elasticache/aws"
 
@@ -41,8 +29,9 @@ module "elasticache" {
 
   vpc_id = data.aws_vpc.network.id
 
-  security_group_ids = [aws_security_group.database.id]
-  subnet_ids         = data.aws_subnets.database.ids
+  create_security_group = false
+  security_group_ids    = [data.aws_security_group.database.id]
+  subnet_ids            = data.aws_subnets.database.ids
 }
 
 resource "aws_ssm_parameter" "redis_host" {
