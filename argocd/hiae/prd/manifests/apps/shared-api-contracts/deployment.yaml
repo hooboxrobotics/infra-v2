@@ -16,7 +16,7 @@ spec:
         app: shared-api-contracts
     spec:
       containers:
-      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-contracts:8cf5e7
+      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-contracts:55063a
         imagePullPolicy: IfNotPresent
         name: shared-api-contracts-app
         ports:

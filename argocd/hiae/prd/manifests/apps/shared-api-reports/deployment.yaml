@@ -16,7 +16,7 @@ spec:
         app: shared-api-reports
     spec:
       containers:
-      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-reports:a5b0a6
+      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/shared-api-reports:39e803
         imagePullPolicy: IfNotPresent
         name: shared-api-reports-app
         ports:

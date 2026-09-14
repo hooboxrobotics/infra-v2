@@ -16,7 +16,7 @@ spec:
         app: np-api-gateway
     spec:
       containers:
-      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/np-api-gateway:2a611c
+      - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/np-api-gateway:2c3942
         imagePullPolicy: IfNotPresent
         name: np-api-gateway-app
         ports:
