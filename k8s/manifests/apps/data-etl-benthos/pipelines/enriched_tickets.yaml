@@ -163,12 +163,31 @@ pipeline:
         null
       }
 
-  - label: processor_fetch_patient_info
+  - label: processor_fetch_patient_info_patients_table
     switch:
     - check: this.subject != NULL
       processors:
         - branch:
-            result_map: 'root.patient_tasy = this'
+            request_map: root = this
+            result_map: |
+              if this.length() > 0 {
+                root.patient = {}
+                root.patient.name = if this.0.name != NULL {
+                  this.0.name
+                } else if root.patient_name != NULL {
+                  root.patient_name
+                } else {
+                  NULL
+                }
+
+                root.patient.document = if this.0.cpf != NULL {
+                  this.0.cpf
+                } else if this.0.passport != NULL {
+                  this.0.passport
+                } else {
+                  NULL
+                }
+              }
             processors:
             - sql_raw:
                 driver: mysql
@@ -182,29 +201,47 @@ pipeline:
                   FROM np_integrador_tasy.patients P
                   WHERE P.patient_id = ?
                 args_mapping: '[ this.subject ]'
-  
-  - label: processor_set_patient_info
+
+  - label: processor_fetch_patient_info_atendimentos_table
     switch:
-    - check: this.patient_tasy != NULL && this.patient_tasy.length() > 0
+    - check: this.subject != NULL && this.patient == NULL
       processors:
-      - bloblang: |
-          root = this
-          this.patient = {}
-          root.patient.name = if this.patient_tasy.0.name != NULL {
-            this.patient_tasy.0.name
-          } else if this.patient_name != NULL {
-            this.patient_name
-          } else {
-            NULL
-          }
-          root.patient.document = if this.patient_tasy.0.cpf != NULL {
-            this.patient_tasy.0.cpf
-          } else if this.patient_tasy.0.passport != NULL {
-            this.patient_tasy.0.passport
-          } else {
-            NULL
-          }
-    - processors:
+        - branch:
+            request_map: root = this
+            result_map: |
+              if this.length() > 0 {
+                root.patient = {}
+                root.patient.name = if this.0.name != NULL {
+                  this.0.name
+                } else if root.patient_name != NULL {
+                  root.patient_name
+                } else {
+                  NULL
+                }
+
+                root.patient.document = if this.0.cpf != NULL {
+                  this.0.cpf
+                } else {
+                  NULL
+                }
+              }
+            processors:
+            - sql_raw:
+                driver: mysql
+                conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_integrador_tasy?${INPUT_CONNOPTS}
+                query: |
+                  SELECT
+                    A.NM_PACIENTE AS name,
+                    A.NR_CPF AS cpf
+                  FROM np_integrador_tasy.atendimentos A
+                  WHERE A.NR_ATENDIMENTO = ? AND A.id_company = ?
+                args_mapping: '[ this.subject, this.company_id ]'
+  
+  - label: processor_set_patient_info_when_nothing_is_found
+    switch:
+    - check: this.patient == NULL
+      processors:
       - bloblang: |
           root = this
           root.patient = {}
@@ -290,7 +327,8 @@ output:
             KEY `idx_enriched_tickets_company_id_patient_document_created_at` (`company_id`,`created_at`,`patient_document`),
             KEY `idx_enriched_tickets_patient_document` (`patient_document`),
             KEY `idx_entry_reason_company_id_create_at` (`entry_reason`,`company_id`,`created_at`),
-            KEY `idx_patient_name_company_id` (`patient_name`,`company_id`)
+            KEY `idx_patient_name_company_id` (`patient_name`,`company_id`),
+            KEY `idx_enrichedtickets_company_id_entry_time_reason` (`company_id`,`entry_time`,`entry_reason`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         query: |
           INSERT INTO enrichedtickets (
