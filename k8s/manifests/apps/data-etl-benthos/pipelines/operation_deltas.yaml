@@ -1,0 +1,404 @@
+logger:
+  level: ALL
+
+http:
+  enabled: true
+  root_path: /benthos
+  debug_endpoints: true
+
+input:
+  label: input
+  broker:
+    inputs:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+          query: |
+            WITH lastReference AS (
+              SELECT COALESCE(MAX(d.reference_date), '2001-01-01 00:00:00') AS reference_date
+              FROM benthos.datatracker d
+              WHERE d.source = 'operation_deltas'
+            ),
+            systemActionExecutionChanges AS (
+              SELECT
+                DISTINCT Op.id AS operation_id,
+                SAE.created_at AS reference_date
+              FROM shared_api_or_events.systemactionexecutions SAE
+              JOIN shared_api_or_events.surgicalmarks SM ON SAE.id_surgical_mark = SM.id
+              JOIN shared_api_or_events.operationsurgicalmarks OSM on OSM.id_surgical_mark = SM.id
+              JOIN shared_api_or_events.operations Op on Op.id = OSM.id_operation
+              JOIN lastReference lr
+              WHERE SAE.created_at >= lr.reference_date
+            ),
+            surgicalMarkChanges AS (
+              SELECT
+                DISTINCT Op.id AS operation_id,
+                SM.created_at AS reference_date
+              FROM shared_api_or_events.surgicalmarks SM
+              JOIN shared_api_or_events.operationsurgicalmarks OSM on OSM.id_surgical_mark = SM.id
+              JOIN shared_api_or_events.operations Op on Op.id = OSM.id_operation
+              JOIN lastReference lr
+              WHERE SM.created_at >= lr.reference_date
+            ),
+            operationsChanges AS (
+              SELECT
+                Op.id AS operation_id,
+                Op.updated_at AS reference_date
+              FROM shared_api_or_events.operations Op
+              JOIN lastReference lr
+              WHERE Op.updated_at >= lr.reference_date
+            ),
+            allOperationChanges AS (
+              SELECT
+                operation_id,
+                MAX(reference_date) AS reference_date
+              FROM (
+                SELECT operation_id, reference_date FROM systemActionExecutionChanges
+                UNION ALL
+                SELECT operation_id, reference_date FROM surgicalMarkChanges
+                UNION ALL
+                SELECT operation_id, reference_date FROM operationsChanges
+              ) t
+              GROUP BY operation_id
+            ),
+            operationMarks AS (
+              SELECT
+                Op.id AS operation_id,
+                Op.id_place AS room_id,
+                Op.started_at AS operation_started_at,
+                Op.ended_at AS operation_ended_at,
+                MAX(TM.id_company) AS company_id,
+                MAX(TM.id_product) AS product_id,
+                MIN(CASE WHEN TAMM.marker = 'roomReady' THEN SM.achieved_at END) AS room_ready_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfRoomReady' THEN SM.achieved_at END) AS room_ready_end,
+                MIN(CASE WHEN TAMM.marker = 'roomOccupancy' THEN SM.achieved_at END) AS room_occupancy_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfRoomOccupancy' THEN SM.achieved_at END) AS room_occupancy_end,
+                MIN(CASE WHEN TAMM.marker = 'startOfAnesthesia' THEN SM.achieved_at END) AS anesthesia_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfAnesthesia' THEN SM.achieved_at END) AS anesthesia_end,
+                MIN(CASE WHEN TAMM.marker = 'startOfOperation' THEN SM.achieved_at END) AS operation_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfOperation' THEN SM.achieved_at END) AS operation_end,
+                MIN(CASE WHEN TAMM.marker = 'beginOfPreparation' THEN SM.achieved_at END) AS preparation_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfPreparation' THEN SM.achieved_at END) AS preparation_end,
+                MIN(CASE WHEN TAMM.marker = 'beginOfRecovery' THEN SM.achieved_at END) AS recovery_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfRecovery' THEN SM.achieved_at END) AS recovery_end,
+                MAX(CASE WHEN TAMM.marker = 'endOfBoxOccupancy' THEN SM.achieved_at END) AS box_occupancy_end,
+                MAX(AOC.reference_date) AS reference_date
+              FROM allOperationChanges AOC
+              JOIN shared_api_or_events.operations Op ON Op.id = AOC.operation_id
+              JOIN shared_api_or_events.operationsurgicalmarks OSM ON OSM.id_operation = AOC.operation_id
+              JOIN shared_api_or_events.surgicalmarks SM ON SM.id = OSM.id_surgical_mark
+              JOIN shared_api_or_events.surgicaltimes ST ON ST.id = SM.id_surgical_time
+              JOIN shared_api_or_events.timeandmovements TM ON TM.id = ST.id_time_and_movement
+              JOIN shared_api_or_events.timeandmovementmarkers TAMM ON TAMM.id_surgical_time = SM.id_surgical_time
+              GROUP BY Op.id
+            )
+            SELECT
+              operation_id,
+              operation_started_at,
+              operation_ended_at,
+              company_id,
+              room_id,
+              product_id,
+              anesthesia_start,
+              anesthesia_end,
+              box_occupancy_end,
+              operation_start,
+              operation_end,
+              preparation_start,
+              preparation_end,
+              recovery_start,
+              recovery_end,
+              room_occupancy_start,
+              room_occupancy_end,
+              room_ready_start,
+              room_ready_end,
+              TIMESTAMPDIFF(SECOND, room_ready_start, room_ready_end) AS delta_room_ready_seconds,
+              TIMESTAMPDIFF(SECOND, room_ready_end, room_occupancy_start) AS roomReadyEnd_roomOccupancyStart_seconds,
+              TIMESTAMPDIFF(SECOND, room_occupancy_start, anesthesia_start) AS roomOccupancyStart_anesthesiaStart_seconds,
+              TIMESTAMPDIFF(SECOND, anesthesia_start, operation_start) AS anesthesiaStart_operationStart_seconds,
+              TIMESTAMPDIFF(SECOND, operation_start, operation_end) AS delta_operation_seconds,
+              TIMESTAMPDIFF(SECOND, anesthesia_start, anesthesia_end) AS delta_anesthesia_seconds,
+              TIMESTAMPDIFF(SECOND, operation_end, anesthesia_end) AS operatioEnd_anesthesiaEnd_seconds,
+              TIMESTAMPDIFF(SECOND, anesthesia_end, room_occupancy_end) AS anesthesiaEnd_roomOccupancyEnd_seconds,
+              TIMESTAMPDIFF(SECOND, room_occupancy_start, room_occupancy_end) AS delta_room_occupancy_seconds,
+              TIMESTAMPDIFF(SECOND, preparation_start, preparation_end) AS delta_preparation_seconds,
+              TIMESTAMPDIFF(SECOND, preparation_end, box_occupancy_end) AS preparationEnd_boxOccupancyEnd_seconds,
+              TIMESTAMPDIFF(SECOND, box_occupancy_end, room_occupancy_start) AS boxOccupancyEnd_roomOccupancyStart_seconds,
+              TIMESTAMPDIFF(SECOND, room_occupancy_end, recovery_start) AS roomOccupancyEnd_recoveryStart_seconds,
+              TIMESTAMPDIFF(SECOND, recovery_start, recovery_end) AS delta_recovery_seconds,
+              reference_date
+            FROM operationMarks
+            ORDER BY reference_date;
+    batching:
+      count: 10000
+      period: 20s
+
+pipeline:
+  processors:
+  - label: processor_get_company_information
+    branch:
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              name
+            FROM shared_api_contracts.companies
+            WHERE id_company = ?
+          args_mapping: '[ this.company_id ]'
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.company_name = this.0.name
+        } else {
+          root.company_name = NULL
+        }
+
+  - label: processor_get_product_info
+    branch:
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              name
+            FROM shared_api_contracts.products
+            WHERE id_product = ?
+          args_mapping: '[ this.product_id ]'
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.product_name = this.0.name
+        }
+
+  - label: processor_get_block_and_room
+    branch:
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              C.id_place AS child_id,
+              F.id_place AS father_id,
+              C.name AS child_name,
+              F.name AS father_name
+            FROM shared_api_contracts.placerelationships PR
+            JOIN shared_api_contracts.places C ON C.id_place = PR.id_child
+            JOIN shared_api_contracts.places F ON F.id_place = PR.id_parent
+            WHERE PR.id_child = ?
+          args_mapping: '[ this.room_id ]'
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.child_id = this.0.child_id
+          root.child_name = this.0.child_name
+          root.father_id = this.0.father_id
+          root.father_name = this.0.father_name
+        }
+
+  - label: processor_filter_empty_block_and_room
+    bloblang: |
+      root = this
+      root.child_id = if this.child_id == NULL { "1" }
+      root.child_name = if this.child_name == NULL { "NÃO ENCONTRADO" }
+      root.father_id = if this.father_id == NULL { "2" }
+      root.father_name = if this.father_name == NULL { "NÃO ENCONTRADO" }
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+    - label: output
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${OUTPUT_USERNAME}:${OUTPUT_PASSWORD}@tcp(${OUTPUT_CONNHOST}:${OUTPUT_CONNPORT})/${OUTPUT_DATABASE}?${OUTPUT_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS operation_deltas (
+            operation_id                                CHAR(36)      NOT NULL  PRIMARY KEY,
+            company_id                                  CHAR(36)      NOT NULL,
+            company_name                                VARCHAR(255)  NOT NULL,
+            product_id                                  CHAR(36),
+            product_name                                VARCHAR(255),
+            block_id                                    CHAR(36),
+            block                                       VARCHAR(255),
+            room_id                                     CHAR(36),
+            room                                        VARCHAR(255),
+            operation_started_at                        DATETIME,
+            operation_ended_at                          DATETIME,
+            anesthesia_start                            DATETIME,
+            anesthesia_end                              DATETIME,
+            box_occupancy_end                           DATETIME,
+            operation_start                             DATETIME,
+            operation_end                               DATETIME,
+            preparation_start                           DATETIME,
+            preparation_end                             DATETIME,
+            recovery_start                              DATETIME,
+            recovery_end                                DATETIME,
+            room_occupancy_start                        DATETIME,
+            room_occupancy_end                          DATETIME,
+            room_ready_start                            DATETIME,
+            room_ready_end                              DATETIME,
+            delta_anesthesia_seconds                    INTEGER,
+            delta_operation_seconds                     INTEGER,
+            delta_preparation_seconds                   INTEGER,
+            delta_recovery_seconds                      INTEGER,
+            delta_room_occupancy_seconds                INTEGER,
+            delta_room_ready_seconds                    INTEGER,
+            anesthesiaEnd_roomOccupancyEnd_seconds      INTEGER,
+            anesthesiaStart_operationStart_seconds      INTEGER,
+            boxOccupancyEnd_roomOccupancyStart_seconds  INTEGER,
+            operatioEnd_anesthesiaEnd_seconds           INTEGER,
+            preparationEnd_boxOccupancyEnd_seconds      INTEGER,
+            roomOccupancyEnd_recoveryStart_seconds      INTEGER,
+            roomOccupancyStart_anesthesiaStart_seconds  INTEGER,
+            roomReadyEnd_roomOccupancyStart_seconds     INTEGER
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
+        query: |
+          INSERT INTO operation_deltas (
+            operation_id,
+            company_id,
+            company_name,
+            product_id,
+            product_name,
+            block_id,
+            block,
+            room_id,
+            room,
+            operation_started_at,
+            operation_ended_at,
+            anesthesia_start,
+            anesthesia_end,
+            box_occupancy_end,
+            operation_start,
+            operation_end,
+            preparation_start,
+            preparation_end,
+            recovery_start,
+            recovery_end,
+            room_occupancy_start,
+            room_occupancy_end,
+            room_ready_start,
+            room_ready_end,
+            delta_anesthesia_seconds,
+            delta_operation_seconds,
+            delta_preparation_seconds,
+            delta_recovery_seconds,
+            delta_room_occupancy_seconds,
+            delta_room_ready_seconds,
+            anesthesiaEnd_roomOccupancyEnd_seconds,
+            anesthesiaStart_operationStart_seconds,
+            boxOccupancyEnd_roomOccupancyStart_seconds,
+            operatioEnd_anesthesiaEnd_seconds,
+            preparationEnd_boxOccupancyEnd_seconds,
+            roomOccupancyEnd_recoveryStart_seconds,
+            roomOccupancyStart_anesthesiaStart_seconds,
+            roomReadyEnd_roomOccupancyStart_seconds
+          ) VALUES(
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          )
+          ON DUPLICATE KEY UPDATE
+            company_id = VALUES(company_id),
+            company_name = VALUES(company_name),
+            product_id = VALUES(product_id),
+            product_name = VALUES(product_name),
+            block_id = VALUES(block_id),
+            block = VALUES(block),
+            room_id = VALUES(room_id),
+            room = VALUES(room),
+            operation_started_at = VALUES(operation_started_at),
+            operation_ended_at = VALUES(operation_ended_at),
+            anesthesia_start = VALUES(anesthesia_start),
+            anesthesia_end = VALUES(anesthesia_end),
+            box_occupancy_end = VALUES(box_occupancy_end),
+            operation_start = VALUES(operation_start),
+            operation_end = VALUES(operation_end),
+            preparation_start = VALUES(preparation_start),
+            preparation_end = VALUES(preparation_end),
+            recovery_start = VALUES(recovery_start),
+            recovery_end = VALUES(recovery_end),
+            room_occupancy_start = VALUES(room_occupancy_start),
+            room_occupancy_end = VALUES(room_occupancy_end),
+            room_ready_start = VALUES(room_ready_start),
+            room_ready_end = VALUES(room_ready_end),
+            delta_anesthesia_seconds = VALUES(delta_anesthesia_seconds),
+            delta_operation_seconds = VALUES(delta_operation_seconds),
+            delta_preparation_seconds = VALUES(delta_preparation_seconds),
+            delta_recovery_seconds = VALUES(delta_recovery_seconds),
+            delta_room_occupancy_seconds = VALUES(delta_room_occupancy_seconds),
+            delta_room_ready_seconds = VALUES(delta_room_ready_seconds),
+            anesthesiaEnd_roomOccupancyEnd_seconds = VALUES(anesthesiaEnd_roomOccupancyEnd_seconds),
+            anesthesiaStart_operationStart_seconds = VALUES(anesthesiaStart_operationStart_seconds),
+            boxOccupancyEnd_roomOccupancyStart_seconds = VALUES(boxOccupancyEnd_roomOccupancyStart_seconds),
+            operatioEnd_anesthesiaEnd_seconds = VALUES(operatioEnd_anesthesiaEnd_seconds),
+            preparationEnd_boxOccupancyEnd_seconds = VALUES(preparationEnd_boxOccupancyEnd_seconds),
+            roomOccupancyEnd_recoveryStart_seconds = VALUES(roomOccupancyEnd_recoveryStart_seconds),
+            roomOccupancyStart_anesthesiaStart_seconds = VALUES(roomOccupancyStart_anesthesiaStart_seconds),
+            roomReadyEnd_roomOccupancyStart_seconds = VALUES(roomReadyEnd_roomOccupancyStart_seconds);
+        args_mapping: |
+          root = [
+            this.operation_id,
+            this.company_id,
+            this.company_name,
+            this.product_id,
+            this.product_name,
+            this.father_id,
+            this.father_name,
+            this.child_id,
+            this.child_name,
+            this.operation_started_at,
+            this.operation_ended_at,
+            this.anesthesia_start,
+            this.anesthesia_end,
+            this.box_occupancy_end,
+            this.operation_start,
+            this.operation_end,
+            this.preparation_start,
+            this.preparation_end,
+            this.recovery_start,
+            this.recovery_end,
+            this.room_occupancy_start,
+            this.room_occupancy_end,
+            this.room_ready_start,
+            this.room_ready_end,
+            this.delta_anesthesia_seconds,
+            this.delta_operation_seconds,
+            this.delta_preparation_seconds,
+            this.delta_recovery_seconds,
+            this.delta_room_occupancy_seconds,
+            this.delta_room_ready_seconds,
+            this.anesthesiaEnd_roomOccupancyEnd_seconds,
+            this.anesthesiaStart_operationStart_seconds,
+            this.boxOccupancyEnd_roomOccupancyStart_seconds,
+            this.operatioEnd_anesthesiaEnd_seconds,
+            this.preparationEnd_boxOccupancyEnd_seconds,
+            this.roomOccupancyEnd_recoveryStart_seconds,
+            this.roomOccupancyStart_anesthesiaStart_seconds,
+            this.roomReadyEnd_roomOccupancyStart_seconds
+          ]
+
+    - label: output_set_reference_date
+      processors:
+        - mapping: |
+            root = if batch_index() != batch_size() - 1 { deleted() }
+      sql_raw:
+        driver: mysql
+        conn_max_open: ${MAX_OPEN_CONNECTIONS}
+        dsn: ${MAIN_USERNAME}:${MAIN_PASSWORD}@tcp(${MAIN_CONNHOST}:${MAIN_CONNPORT})/benthos?${MAIN_CONNOPTS}
+        init_statement: |
+          CREATE TABLE IF NOT EXISTS datatracker (
+            source				    VARCHAR(255)  NOT NULL  PRIMARY KEY,
+            reference_date		DATETIME      NOT NULL
+          );
+        query: |
+          INSERT INTO datatracker (source, reference_date)
+          VALUES ('operation_deltas', ?)
+          ON DUPLICATE KEY UPDATE reference_date = VALUES(reference_date);
+        args_mapping: root = [ this.reference_date ]
