@@ -55,8 +55,6 @@ pipelines:
     file: expired_and_finished_tickets.yaml
   - name: meal-orders
     file: meal_orders.yaml
-  - name: operation-deltas
-    file: operation_deltas.yaml
   - name: ratings
     file: ratings.yaml
   - name: requests
