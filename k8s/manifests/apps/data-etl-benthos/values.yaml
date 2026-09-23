@@ -58,6 +58,9 @@ pipelines:
   - name: operation-deltas
     file: operation_deltas.yaml
     schedule: "*/5 * * * *"
+  - name: operation-delays
+    file: operation_delays.yaml
+    schedule: "*/5 * * * *"
   - name: ratings
     file: ratings.yaml
   - name: requests
