@@ -57,6 +57,7 @@ pipelines:
     file: meal_orders.yaml
   - name: operation-deltas
     file: operation_deltas.yaml
+    schedule: "*/5 * * * *"
   - name: ratings
     file: ratings.yaml
   - name: requests
