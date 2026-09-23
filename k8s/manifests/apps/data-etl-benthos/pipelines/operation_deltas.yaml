@@ -1,5 +1,5 @@
 logger:
-  level: ALL
+  level: DEBUG
 
 http:
   enabled: true
@@ -62,9 +62,29 @@ input:
               ) t
               GROUP BY operation_id
             ),
+            preopMarks AS (
+              SELECT
+                O.id AS operation_id,
+                O.id_schedule,
+                MIN(CASE WHEN TAMM.marker = 'beginOfPreparation' THEN SM.achieved_at END) AS preparation_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfPreparation' THEN SM.achieved_at END) AS preparation_end,
+                MIN(CASE WHEN TAMM.marker = 'beginOfRecovery' THEN SM.achieved_at END) AS recovery_start,
+                MAX(CASE WHEN TAMM.marker = 'endOfRecovery' THEN SM.achieved_at END) AS recovery_end,
+                MAX(CASE WHEN TAMM.marker = 'endOfBoxOccupancy' THEN SM.achieved_at END) AS box_occupancy_end
+              FROM allOperationChanges AOC
+              JOIN shared_api_or_events.operations O ON O.id = AOC.operation_id
+              JOIN shared_api_or_events.erptasyexclusivedata E ON E.id_schedule = O.id_schedule
+              JOIN shared_api_or_events.patientadmissionbox PAB ON PAB.nr_atendimento = E.nr_atendimento
+              JOIN shared_api_or_events.patientpreparation PP ON PP.id_admission = PAB.id
+              JOIN shared_api_or_events.patientpreparationpreopmarks PPPM ON PPPM.id_patient_preparation = PP.id
+              JOIN shared_api_or_events.surgicalmarks SM ON SM.id = PPPM.id_preop_mark
+              JOIN shared_api_or_events.timeandmovementmarkers TAMM ON TAMM.id_surgical_time = SM.id_surgical_time
+              GROUP BY O.id
+            ),
             operationMarks AS (
               SELECT
                 Op.id AS operation_id,
+                Op.id_schedule,
                 Op.id_place AS room_id,
                 Op.started_at AS operation_started_at,
                 Op.ended_at AS operation_ended_at,
@@ -94,41 +114,42 @@ input:
               GROUP BY Op.id
             )
             SELECT
-              operation_id,
-              operation_started_at,
-              operation_ended_at,
-              company_id,
-              room_id,
-              product_id,
-              anesthesia_start,
-              anesthesia_end,
-              box_occupancy_end,
-              operation_start,
-              operation_end,
-              preparation_start,
-              preparation_end,
-              recovery_start,
-              recovery_end,
-              room_occupancy_start,
-              room_occupancy_end,
-              room_ready_start,
-              room_ready_end,
-              TIMESTAMPDIFF(SECOND, room_ready_start, room_ready_end) AS delta_room_ready_seconds,
-              TIMESTAMPDIFF(SECOND, room_ready_end, room_occupancy_start) AS roomReadyEnd_roomOccupancyStart_seconds,
-              TIMESTAMPDIFF(SECOND, room_occupancy_start, anesthesia_start) AS roomOccupancyStart_anesthesiaStart_seconds,
-              TIMESTAMPDIFF(SECOND, anesthesia_start, operation_start) AS anesthesiaStart_operationStart_seconds,
-              TIMESTAMPDIFF(SECOND, operation_start, operation_end) AS delta_operation_seconds,
-              TIMESTAMPDIFF(SECOND, anesthesia_start, anesthesia_end) AS delta_anesthesia_seconds,
-              TIMESTAMPDIFF(SECOND, operation_end, anesthesia_end) AS operatioEnd_anesthesiaEnd_seconds,
-              TIMESTAMPDIFF(SECOND, anesthesia_end, room_occupancy_end) AS anesthesiaEnd_roomOccupancyEnd_seconds,
-              TIMESTAMPDIFF(SECOND, room_occupancy_start, room_occupancy_end) AS delta_room_occupancy_seconds,
-              TIMESTAMPDIFF(SECOND, preparation_start, preparation_end) AS delta_preparation_seconds,
-              TIMESTAMPDIFF(SECOND, preparation_end, box_occupancy_end) AS preparationEnd_boxOccupancyEnd_seconds,
-              TIMESTAMPDIFF(SECOND, box_occupancy_end, room_occupancy_start) AS boxOccupancyEnd_roomOccupancyStart_seconds,
-              TIMESTAMPDIFF(SECOND, room_occupancy_end, recovery_start) AS roomOccupancyEnd_recoveryStart_seconds,
-              TIMESTAMPDIFF(SECOND, recovery_start, recovery_end) AS delta_recovery_seconds,
-              reference_date
-            FROM operationMarks
+              OM.operation_id,
+              OM.operation_started_at,
+              OM.operation_ended_at,
+              OM.company_id,
+              OM.room_id,
+              OM.product_id,
+              OM.anesthesia_start,
+              OM.anesthesia_end,
+              PM.box_occupancy_end,
+              OM.operation_start,
+              OM.operation_end,
+              PM.preparation_start,
+              PM.preparation_end,
+              PM.recovery_start,
+              PM.recovery_end,
+              OM.room_occupancy_start,
+              OM.room_occupancy_end,
+              OM.room_ready_start,
+              OM.room_ready_end,
+              TIMESTAMPDIFF(SECOND, OM.room_ready_start, OM.room_ready_end) AS delta_room_ready_seconds,
+              TIMESTAMPDIFF(SECOND, OM.room_ready_end, OM.room_occupancy_start) AS roomReadyEnd_roomOccupancyStart_seconds,
+              TIMESTAMPDIFF(SECOND, OM.room_occupancy_start, OM.anesthesia_start) AS roomOccupancyStart_anesthesiaStart_seconds,
+              TIMESTAMPDIFF(SECOND, OM.anesthesia_start, OM.operation_start) AS anesthesiaStart_operationStart_seconds,
+              TIMESTAMPDIFF(SECOND, OM.operation_start, OM.operation_end) AS delta_operation_seconds,
+              TIMESTAMPDIFF(SECOND, OM.anesthesia_start, OM.anesthesia_end) AS delta_anesthesia_seconds,
+              TIMESTAMPDIFF(SECOND, OM.operation_end, OM.anesthesia_end) AS operatioEnd_anesthesiaEnd_seconds,
+              TIMESTAMPDIFF(SECOND, OM.anesthesia_end, OM.room_occupancy_end) AS anesthesiaEnd_roomOccupancyEnd_seconds,
+              TIMESTAMPDIFF(SECOND, OM.room_occupancy_start, OM.room_occupancy_end) AS delta_room_occupancy_seconds,
+              TIMESTAMPDIFF(SECOND, PM.preparation_start, PM.preparation_end) AS delta_preparation_seconds,
+              TIMESTAMPDIFF(SECOND, PM.preparation_end, OM.box_occupancy_end) AS preparationEnd_boxOccupancyEnd_seconds,
+              TIMESTAMPDIFF(SECOND, OM.box_occupancy_end, OM.room_occupancy_start) AS boxOccupancyEnd_roomOccupancyStart_seconds,
+              TIMESTAMPDIFF(SECOND, OM.room_occupancy_end, PM.recovery_start) AS roomOccupancyEnd_recoveryStart_seconds,
+              TIMESTAMPDIFF(SECOND, PM.recovery_start, PM.recovery_end) AS delta_recovery_seconds,
+              OM.reference_date
+            FROM operationMarks OM
+            LEFT JOIN preopMarks PM ON PM.operation_id = OM.operation_id
             ORDER BY reference_date;
     batching:
       count: 10000
@@ -211,6 +232,89 @@ pipeline:
       root.father_id = if this.father_id == NULL { "2" }
       root.father_name = if this.father_name == NULL { "NÃO ENCONTRADO" }
 
+  - label: processor_get_agenda_paciente
+    branch:
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/np_integrador_tasy?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              AP.NR_CIRURGIA,
+              AP.NM_PACIENTE
+            FROM np_integrador_tasy.agendapaciente AP
+            JOIN shared_api_or_events.operations O ON O.id_schedule = AP.NR_SEQUENCIA
+            WHERE O.id = ?
+          args_mapping: '[ this.operation_id ]'
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.operation_number = this.0.NR_CIRURGIA
+          root.patient_name = this.0.NM_PACIENTE
+        } else {
+          root.operation_number = NULL
+          root.patient_name = NULL
+        }
+
+  - label: processor_get_schedule
+    branch:
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              S.doctor_name,
+              S.urgency,
+              S.operation_description,
+              S.estimated_duration
+            FROM shared_api_or_events.operations O
+            JOIN shared_api_or_events.schedules S ON S.id = O.id_schedule
+            WHERE O.id = ?
+          args_mapping: '[ this.operation_id ]'
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.doctor_name = this.0.doctor_name
+          root.operation_type = this.0.urgency
+          root.operation_description = this.0.operation_description
+          root.operation_duration = this.0.estimated_duration
+        } else {
+          root.doctor_name = NULL
+          root.operation_type = NULL
+          root.operation_description = NULL
+          root.operation_duration = NULL
+        }
+
+  - label: processor_get_operation_booking
+    branch:
+      processors:
+      - sql_raw:
+          driver: mysql
+          conn_max_open: ${MAX_OPEN_CONNECTIONS}
+          dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+          query: |
+            SELECT
+              OB.`to`
+            FROM shared_api_or_events.operationbookings OB
+            JOIN shared_api_or_events.operations O ON O.id_schedule = OB.id_schedule
+            WHERE O.id = ?
+          args_mapping: '[ this.operation_id ]'
+      request_map: root = this
+      result_map: |
+        if this.length() > 0 {
+          root.expected_start_date = this.0.to
+        } else {
+          root.expected_start_date = NULL
+        }
+
+  - label: debug_log
+    log:
+      level: DEBUG
+      message: "REF=${! this.reference_date }"
+
 output:
   broker:
     pattern: fan_out
@@ -231,6 +335,13 @@ output:
             block                                       VARCHAR(255),
             room_id                                     CHAR(36),
             room                                        VARCHAR(255),
+            operation_number                            INTEGER,
+            operation_type                              VARCHAR(100),
+            operation_description                       TEXT,
+            operation_duration                          INTEGER,
+            patient_name                                VARCHAR(255),
+            doctor_name                                 VARCHAR(255),
+            expected_start_date                         DATETIME,
             operation_started_at                        DATETIME,
             operation_ended_at                          DATETIME,
             anesthesia_start                            DATETIME,
@@ -272,6 +383,13 @@ output:
             block,
             room_id,
             room,
+            operation_number,
+            operation_type,
+            operation_description,
+            operation_duration,
+            patient_name,
+            doctor_name,
+            expected_start_date,
             operation_started_at,
             operation_ended_at,
             anesthesia_start,
@@ -302,7 +420,7 @@ output:
             roomOccupancyStart_anesthesiaStart_seconds,
             roomReadyEnd_roomOccupancyStart_seconds
           ) VALUES(
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           )
           ON DUPLICATE KEY UPDATE
             company_id = VALUES(company_id),
@@ -313,6 +431,13 @@ output:
             block = VALUES(block),
             room_id = VALUES(room_id),
             room = VALUES(room),
+            operation_number = VALUES(operation_number),
+            operation_type = VALUES(operation_type),
+            operation_description = VALUES(operation_description),
+            operation_duration = VALUES(operation_duration),
+            patient_name = VALUES(patient_name),
+            doctor_name = VALUES(doctor_name),
+            expected_start_date = VALUES(expected_start_date),
             operation_started_at = VALUES(operation_started_at),
             operation_ended_at = VALUES(operation_ended_at),
             anesthesia_start = VALUES(anesthesia_start),
@@ -353,6 +478,13 @@ output:
             this.father_name,
             this.child_id,
             this.child_name,
+            this.operation_number,
+            this.operation_type,
+            this.operation_description,
+            this.operation_duration,
+            this.patient_name,
+            this.doctor_name,
+            this.expected_start_date,
             this.operation_started_at,
             this.operation_ended_at,
             this.anesthesia_start,
