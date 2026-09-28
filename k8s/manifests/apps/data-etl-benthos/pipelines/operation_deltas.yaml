@@ -49,6 +49,20 @@ input:
               JOIN lastReference lr
               WHERE Op.updated_at >= lr.reference_date
             ),
+            operationOrdersChanges AS (
+              SELECT
+                DISTINCT Op.id AS operation_id,
+                OS.created_at AS reference_date
+              FROM shared_api_or_events.orders OE_O
+              JOIN shared_api_reports.orderstatuses OS
+                ON OS.order_id = OE_O.id
+                AND OS.status_id = '3cddc9ac-62b6-440c-98e4-fe43cd9549e6'
+              JOIN shared_api_or_events.systemactionexecutions SAE ON SAE.id = OE_O.id_system_action_execution
+              JOIN shared_api_or_events.operationsurgicalmarks OSM ON OSM.id_surgical_mark = SAE.id_surgical_mark
+              JOIN shared_api_or_events.operations Op ON Op.id = OSM.id_operation
+              JOIN lastReference lr
+              WHERE OS.created_at >= lr.reference_date
+            ),
             allOperationChanges AS (
               SELECT
                 operation_id,
@@ -59,6 +73,8 @@ input:
                 SELECT operation_id, reference_date FROM surgicalMarkChanges
                 UNION ALL
                 SELECT operation_id, reference_date FROM operationsChanges
+                UNION ALL
+                SELECT operation_id, reference_date FROM operationOrdersChanges
               ) t
               GROUP BY operation_id
             ),
@@ -103,6 +119,7 @@ input:
                 MIN(CASE WHEN TAMM.marker = 'beginOfRecovery' THEN SM.achieved_at END) AS recovery_start,
                 MAX(CASE WHEN TAMM.marker = 'endOfRecovery' THEN SM.achieved_at END) AS recovery_end,
                 MAX(CASE WHEN TAMM.marker = 'endOfBoxOccupancy' THEN SM.achieved_at END) AS box_occupancy_end,
+                MIN(CASE WHEN TAMM.marker = 'roomTurnover' THEN SM.achieved_at END) AS room_turnover_start,
                 MAX(AOC.reference_date) AS reference_date
               FROM allOperationChanges AOC
               JOIN shared_api_or_events.operations Op ON Op.id = AOC.operation_id
@@ -133,6 +150,7 @@ input:
               OM.room_occupancy_end,
               OM.room_ready_start,
               OM.room_ready_end,
+              OM.room_turnover_start,
               TIMESTAMPDIFF(SECOND, OM.room_ready_start, OM.room_ready_end) AS delta_room_ready_seconds,
               TIMESTAMPDIFF(SECOND, OM.room_ready_end, OM.room_occupancy_start) AS roomReadyEnd_roomOccupancyStart_seconds,
               TIMESTAMPDIFF(SECOND, OM.room_occupancy_start, OM.anesthesia_start) AS roomOccupancyStart_anesthesiaStart_seconds,
@@ -150,7 +168,7 @@ input:
               OM.reference_date
             FROM operationMarks OM
             LEFT JOIN preopMarks PM ON PM.operation_id = OM.operation_id
-            ORDER BY reference_date;
+            ORDER BY OM.reference_date;
     batching:
       count: 10000
       period: 20s
@@ -325,6 +343,72 @@ pipeline:
         null
       }
 
+  - label: processor_fetch_metric_marker
+    switch:
+      - check: this.room_turnover_start != null
+        processors:
+          - branch:
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+                    query: |
+                      SELECT
+                        *
+                      FROM shared_api_contracts.metricmarkers
+                      WHERE company_id = ? AND product_id = ? AND name = 'GIRO DE SALA';
+                    args_mapping: '[ this.company_id, this.product_id ]'
+              request_map: root = this
+              result_map: |
+                root.room_turnover_config = if this.length() > 0 {
+                  this.0
+                } else { null }
+
+  - label: processor_compute_room_turnover_end
+    switch:
+      - check: this.room_turnover_config != null && this.room_turnover_config.end_reference == "order_finished_at"
+        processors:
+          - branch:
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+                    query: |
+                      SELECT MAX(OS.created_at) AS order_finished_at
+                      FROM shared_api_or_events.operationsurgicalmarks OSM
+                      JOIN shared_api_or_events.systemactionexecutions SAE ON SAE.id_surgical_mark = OSM.id_surgical_mark
+                      JOIN shared_api_or_events.orders Oor ON Oor.id_system_action_execution = SAE.id
+                      JOIN shared_api_reports.orderstatuses OS
+                        ON OS.order_id = Oor.id
+                       AND OS.status_id = '3cddc9ac-62b6-440c-98e4-fe43cd9549e6'
+                      WHERE OSM.id_operation = ?
+                        AND (? IS NULL OR SAE.id_system_action MEMBER OF (CAST(? AS JSON)));
+                    args_mapping: |
+                      let raw = this.room_turnover_config.system_action_id_in
+                      let ids = if $raw.type() == "string" { $raw.parse_json() } else { $raw }
+                      let ids_json = if $ids != null && $ids.length() > 0 {
+                        $ids.format_json().string()
+                      } else {
+                        null
+                      }
+                      root = [ this.operation_id, $ids_json, $ids_json ]
+              request_map: root = this
+              result_map: |
+                root.room_turnover_end = this.0.order_finished_at
+
+  - label: processor_delta_room_turnover_seconds
+    bloblang: |
+      map to_unix {
+        root = this.ts_parse("2006-01-02 15:04:05").ts_unix()
+      }
+
+      root = this
+      root.delta_room_turnover_seconds = if this.room_turnover_start != null && this.room_turnover_end != null {
+        this.room_turnover_end.apply("to_unix") - this.room_turnover_start.apply("to_unix")
+      } else { null }
+
   - label: debug_log
     log:
       level: DEBUG
@@ -373,12 +457,15 @@ output:
             room_occupancy_end                          DATETIME,
             room_ready_start                            DATETIME,
             room_ready_end                              DATETIME,
+            room_turnover_start                         DATETIME,
+            room_turnover_end                           DATETIME,
             delta_anesthesia_seconds                    INTEGER,
             delta_operation_seconds                     INTEGER,
             delta_preparation_seconds                   INTEGER,
             delta_recovery_seconds                      INTEGER,
             delta_room_occupancy_seconds                INTEGER,
             delta_room_ready_seconds                    INTEGER,
+            delta_room_turnover_seconds                 INTEGER,
             anesthesiaEnd_roomOccupancyEnd_seconds      INTEGER,
             anesthesiaStart_operationStart_seconds      INTEGER,
             boxOccupancyEnd_roomOccupancyStart_seconds  INTEGER,
@@ -423,12 +510,15 @@ output:
             room_occupancy_end,
             room_ready_start,
             room_ready_end,
+            room_turnover_start,
+            room_turnover_end,
             delta_anesthesia_seconds,
             delta_operation_seconds,
             delta_preparation_seconds,
             delta_recovery_seconds,
             delta_room_occupancy_seconds,
             delta_room_ready_seconds,
+            delta_room_turnover_seconds,
             anesthesiaEnd_roomOccupancyEnd_seconds,
             anesthesiaStart_operationStart_seconds,
             boxOccupancyEnd_roomOccupancyStart_seconds,
@@ -439,7 +529,7 @@ output:
             roomOccupancyStart_anesthesiaStart_seconds,
             roomReadyEnd_roomOccupancyStart_seconds
           ) VALUES(
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           )
           ON DUPLICATE KEY UPDATE
             company_id = VALUES(company_id),
@@ -473,12 +563,15 @@ output:
             room_occupancy_end = VALUES(room_occupancy_end),
             room_ready_start = VALUES(room_ready_start),
             room_ready_end = VALUES(room_ready_end),
+            room_turnover_start = VALUES(room_turnover_start),
+            room_turnover_end = VALUES(room_turnover_end),
             delta_anesthesia_seconds = VALUES(delta_anesthesia_seconds),
             delta_operation_seconds = VALUES(delta_operation_seconds),
             delta_preparation_seconds = VALUES(delta_preparation_seconds),
             delta_recovery_seconds = VALUES(delta_recovery_seconds),
             delta_room_occupancy_seconds = VALUES(delta_room_occupancy_seconds),
             delta_room_ready_seconds = VALUES(delta_room_ready_seconds),
+            delta_room_turnover_seconds = VALUES(delta_room_turnover_seconds),
             anesthesiaEnd_roomOccupancyEnd_seconds = VALUES(anesthesiaEnd_roomOccupancyEnd_seconds),
             anesthesiaStart_operationStart_seconds = VALUES(anesthesiaStart_operationStart_seconds),
             boxOccupancyEnd_roomOccupancyStart_seconds = VALUES(boxOccupancyEnd_roomOccupancyStart_seconds),
@@ -522,12 +615,15 @@ output:
             this.room_occupancy_end,
             this.room_ready_start,
             this.room_ready_end,
+            this.room_turnover_start,
+            this.room_turnover_end,
             this.delta_anesthesia_seconds,
             this.delta_operation_seconds,
             this.delta_preparation_seconds,
             this.delta_recovery_seconds,
             this.delta_room_occupancy_seconds,
             this.delta_room_ready_seconds,
+            this.delta_room_turnover_seconds,
             this.anesthesiaEnd_roomOccupancyEnd_seconds,
             this.anesthesiaStart_operationStart_seconds,
             this.boxOccupancyEnd_roomOccupancyStart_seconds,
