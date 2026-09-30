@@ -405,9 +405,14 @@ pipeline:
       }
 
       root = this
-      root.delta_room_turnover_seconds = if this.room_turnover_start != null && this.room_turnover_end != null {
-        this.room_turnover_end.apply("to_unix") - this.room_turnover_start.apply("to_unix")
-      } else { null }
+      root.delta_room_turnover_seconds = null
+      if this.room_turnover_start != null {
+        root.delta_room_turnover_seconds = if this.room_turnover_end != null {
+          this.room_turnover_end.apply("to_unix") - this.room_turnover_start.apply("to_unix")
+        } else if this.room_occupancy_end != null {
+          this.room_occupancy_end.apply("to_unix") - this.room_turnover_start.apply("to_unix")
+        } else { null }
+      }
 
   - label: debug_log
     log:
