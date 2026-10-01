@@ -343,7 +343,7 @@ pipeline:
         null
       }
 
-  - label: processor_fetch_metric_marker
+  - label: processor_fetch_room_turnover_metric_marker
     switch:
       - check: this.room_turnover_start != null
         processors:
@@ -355,7 +355,8 @@ pipeline:
                     dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
                     query: |
                       SELECT
-                        *
+                        system_action_id_in,
+                        end_reference
                       FROM shared_api_contracts.metricmarkers
                       WHERE company_id = ? AND product_id = ? AND name = 'GIRO DE SALA';
                     args_mapping: '[ this.company_id, this.product_id ]'
@@ -377,13 +378,19 @@ pipeline:
                     dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
                     query: |
                       SELECT MAX(OS.created_at) AS order_finished_at
-                      FROM shared_api_or_events.operationsurgicalmarks OSM
-                      JOIN shared_api_or_events.systemactionexecutions SAE ON SAE.id_surgical_mark = OSM.id_surgical_mark
+                      FROM shared_api_or_events.operations O
+                      JOIN shared_api_or_events.operationsurgicalmarks OSM on OSM.id_operation = O.id 
+                      JOIN shared_api_or_events.surgicalmarks SM ON SM.id = OSM.id_surgical_mark
+                      JOIN shared_api_or_events.timeandmovementmarkers TAMM
+                        ON TAMM.id_surgical_time = SM.id_surgical_time
+                        AND TAMM.marker = 'roomTurnover'
+                      JOIN shared_api_or_events.systemactionexecutions SAE ON SAE.id_surgical_mark = SM.id
                       JOIN shared_api_or_events.orders Oor ON Oor.id_system_action_execution = SAE.id
+                      JOIN shared_api_reports.orders O ON O.order_id = Oor.id
                       JOIN shared_api_reports.orderstatuses OS
-                        ON OS.order_id = Oor.id
-                       AND OS.status_id = '3cddc9ac-62b6-440c-98e4-fe43cd9549e6'
-                      WHERE OSM.id_operation = ?
+                        ON OS.order_id = O.order_id
+                        AND OS.status_id = '3cddc9ac-62b6-440c-98e4-fe43cd9549e6'
+                      WHERE O.id = ?
                         AND (? IS NULL OR SAE.id_system_action MEMBER OF (CAST(? AS JSON)));
                     args_mapping: |
                       let raw = this.room_turnover_config.system_action_id_in
@@ -414,10 +421,86 @@ pipeline:
         } else { null }
       }
 
+  - label: processor_fetch_cme_removal_metric_marker
+    switch:
+      - check: this.operation_end != null
+        processors:
+          - branch:
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_contracts?${INPUT_CONNOPTS}
+                    query: |
+                      SELECT
+                        system_action_id_in,
+                        end_reference
+                      FROM shared_api_contracts.metricmarkers
+                      WHERE company_id = ? AND product_id = ? AND name = 'RETIRADA CME';
+                    args_mapping: '[ this.company_id, this.product_id ]'
+              request_map: root = this
+              result_map: |
+                root.cme_removal_config = if this.length() > 0 {
+                  this.0
+                } else { null }
+
+  - label: processor_compute_cme_removal_order_finished
+    switch:
+      - check: this.cme_removal_config != null && this.cme_removal_config.end_reference == "order_finished_at"
+        processors:
+          - branch:
+              processors:
+                - sql_raw:
+                    driver: mysql
+                    conn_max_open: ${MAX_OPEN_CONNECTIONS}
+                    dsn: ${INPUT_USERNAME}:${INPUT_PASSWORD}@tcp(${INPUT_CONNHOST}:${INPUT_CONNPORT})/shared_api_or_events?${INPUT_CONNOPTS}
+                    query: |
+                      SELECT MAX(OS.created_at) AS order_finished_at
+                      FROM shared_api_or_events.operations O
+                      JOIN shared_api_or_events.operationsurgicalmarks OSM on OSM.id_operation = O.id 
+                      JOIN shared_api_or_events.surgicalmarks SM ON SM.id = OSM.id_surgical_mark
+                      JOIN shared_api_or_events.timeandmovementmarkers TAMM
+                        ON TAMM.id_surgical_time = SM.id_surgical_time
+                        AND TAMM.marker = 'endOfOperation'
+                      JOIN shared_api_or_events.systemactionexecutions SAE ON SAE.id_surgical_mark = SM.id
+                      JOIN shared_api_or_events.orders Oor ON Oor.id_system_action_execution = SAE.id
+                      JOIN shared_api_reports.orders O ON O.order_id = Oor.id
+                      JOIN shared_api_reports.orderstatuses OS
+                        ON OS.order_id = O.order_id
+                        AND OS.status_id = '3cddc9ac-62b6-440c-98e4-fe43cd9549e6'
+                      WHERE O.id = ?
+                        AND (? IS NULL OR SAE.id_system_action MEMBER OF (CAST(? AS JSON)));
+                    args_mapping: |
+                      let raw = this.cme_removal_config.system_action_id_in
+                      let ids = if $raw.type() == "string" { $raw.parse_json() } else { $raw }
+                      let ids_json = if $ids != null && $ids.length() > 0 {
+                        $ids.format_json().string()
+                      } else {
+                        null
+                      }
+                      root = [ this.operation_id, $ids_json, $ids_json ]
+              request_map: root = this
+              result_map: |
+                root.cme_removal_end = this.0.order_finished_at
+
+  - label: processor_delta_cme_removal_seconds
+    bloblang: |
+      map to_unix {
+        root = this.ts_parse("2006-01-02 15:04:05").ts_unix()
+      }
+
+      root = this
+      root.delta_cme_removal_seconds = null
+      if this.operation_end != null {
+        root.delta_cme_removal_seconds = if this.cme_removal_end != null {
+          this.cme_removal_end.apply("to_unix") - this.operation_end.apply("to_unix")
+        } else { null }
+      }
+
   - label: debug_log
     log:
       level: DEBUG
-      message: "REF=${! this.reference_date }"
+      message: "REF=${! this.reference_date } | CME=${! this.delta_cme_removal_seconds } END=${! this.cme_removal_end }"
 
 output:
   broker:
@@ -465,6 +548,7 @@ output:
             room_turnover_start                         DATETIME,
             room_turnover_end                           DATETIME,
             delta_anesthesia_seconds                    INTEGER,
+            delta_cme_removal_seconds                   INTEGER,
             delta_operation_seconds                     INTEGER,
             delta_preparation_seconds                   INTEGER,
             delta_recovery_seconds                      INTEGER,
@@ -521,6 +605,7 @@ output:
             room_turnover_start,
             room_turnover_end,
             delta_anesthesia_seconds,
+            delta_cme_removal_seconds,
             delta_operation_seconds,
             delta_preparation_seconds,
             delta_recovery_seconds,
@@ -537,7 +622,7 @@ output:
             roomOccupancyStart_anesthesiaStart_seconds,
             roomReadyEnd_roomOccupancyStart_seconds
           ) VALUES(
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           ) AS new
           ON DUPLICATE KEY UPDATE
             company_id = COALESCE(new.company_id, operation_deltas.company_id),
@@ -574,6 +659,7 @@ output:
             room_turnover_start = COALESCE(new.room_turnover_start, operation_deltas.room_turnover_start),
             room_turnover_end = COALESCE(new.room_turnover_end, operation_deltas.room_turnover_end),
             delta_anesthesia_seconds = COALESCE(new.delta_anesthesia_seconds, operation_deltas.delta_anesthesia_seconds),
+            delta_cme_removal_seconds = COALESCE(new.delta_cme_removal_seconds, operation_deltas.delta_cme_removal_seconds),
             delta_operation_seconds = COALESCE(new.delta_operation_seconds, operation_deltas.delta_operation_seconds),
             delta_preparation_seconds = COALESCE(new.delta_preparation_seconds, operation_deltas.delta_preparation_seconds),
             delta_recovery_seconds = COALESCE(new.delta_recovery_seconds, operation_deltas.delta_recovery_seconds),
@@ -626,6 +712,7 @@ output:
             this.room_turnover_start,
             this.room_turnover_end,
             this.delta_anesthesia_seconds,
+            this.delta_cme_removal_seconds,
             this.delta_operation_seconds,
             this.delta_preparation_seconds,
             this.delta_recovery_seconds,
