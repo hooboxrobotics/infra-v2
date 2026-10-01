@@ -491,10 +491,9 @@ pipeline:
 
       root = this
       root.delta_cme_removal_seconds = null
-      if this.operation_end != null {
-        root.delta_cme_removal_seconds = if this.cme_removal_end != null {
-          this.cme_removal_end.apply("to_unix") - this.operation_end.apply("to_unix")
-        } else { null }
+      if this.operation_end != null && this.cme_removal_end != null {
+        root.delta_cme_removal_seconds = this.cme_removal_end.apply("to_unix") - this.operation_end.apply("to_unix")
+        root.cme_removal_start = this.operation_end
       }
 
   - label: debug_log
@@ -535,6 +534,8 @@ output:
             anesthesia_start                            DATETIME,
             anesthesia_end                              DATETIME,
             box_occupancy_end                           DATETIME,
+            cme_removal_start                           DATETIME,
+            cme_removal_end                             DATETIME,
             operation_start                             DATETIME,
             operation_end                               DATETIME,
             preparation_start                           DATETIME,
@@ -592,6 +593,8 @@ output:
             anesthesia_start,
             anesthesia_end,
             box_occupancy_end,
+            cme_removal_start,
+            cme_removal_end,
             operation_start,
             operation_end,
             preparation_start,
@@ -622,7 +625,7 @@ output:
             roomOccupancyStart_anesthesiaStart_seconds,
             roomReadyEnd_roomOccupancyStart_seconds
           ) VALUES(
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           ) AS new
           ON DUPLICATE KEY UPDATE
             company_id = COALESCE(new.company_id, operation_deltas.company_id),
@@ -646,6 +649,8 @@ output:
             anesthesia_start = COALESCE(new.anesthesia_start, operation_deltas.anesthesia_start),
             anesthesia_end = COALESCE(new.anesthesia_end, operation_deltas.anesthesia_end),
             box_occupancy_end = COALESCE(new.box_occupancy_end, operation_deltas.box_occupancy_end),
+            cme_removal_start = COALESCE(new.cme_removal_start, operation_deltas.cme_removal_start),
+            cme_removal_end = COALESCE(new.cme_removal_end, operation_deltas.cme_removal_end),
             operation_start = COALESCE(new.operation_start, operation_deltas.operation_start),
             operation_end = COALESCE(new.operation_end, operation_deltas.operation_end),
             preparation_start = COALESCE(new.preparation_start, operation_deltas.preparation_start),
@@ -699,6 +704,8 @@ output:
             this.anesthesia_start,
             this.anesthesia_end,
             this.box_occupancy_end,
+            this.cme_removal_start,
+            this.cme_removal_end,
             this.operation_start,
             this.operation_end,
             this.preparation_start,
