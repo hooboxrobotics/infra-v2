@@ -17,7 +17,7 @@ spec:
     spec:
       restartPolicy: Always
       containers:
-        - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/room-dash-app:df79ef
+        - image: 264221247403.dkr.ecr.sa-east-1.amazonaws.com/room-dash-app:15e78b
           imagePullPolicy: IfNotPresent
           name: room-dash-app-app
           ports:
